@@ -1,52 +1,60 @@
 # Poly OAuth
 
-Post-quantum biometric OAuth/OIDC identity provider built on eStream v0.8.1 SPARK Auth.
+Post-quantum biometric OAuth/OIDC identity provider built on eStream v0.8.3 and PolyKit v0.3.0.
 
 ## Overview
 
-Poly OAuth extends SPARK Auth into a standards-compliant OAuth 2.0 / OpenID Connect identity provider. Enterprise applications integrate with Poly OAuth for single sign-on using PQ biometric authentication -- no passwords, no TOTP, no SMS codes.
+Poly OAuth extends eStream's SPARK Auth into a standards-compliant OAuth 2.0 / OpenID Connect / SAML 2.0 identity provider with PQ biometric authentication — no passwords, no TOTP, no SMS codes. Tokens are ML-DSA-87 signed assertions (not classical JWTs). Sessions are scatter-stored, and ESLM anomaly detection flags suspicious authentication patterns in real time. First PQ biometric OAuth provider. Once an enterprise integrates Poly OAuth SSO, the switching cost is enormous.
+
+## Key Patterns
+
+- **Zero-linkage**: HKDF context `poly-oauth-v1`, lex `esn/global/org/polylabs/oauth`, isolated StreamSight + metering + billing
+- **Graph model**: `graph identity_federation` (OrganizationNode, ApplicationNode, UserSessionNode, ServiceProviderNode) with CSR tiered storage
+- **DAG model**: `dag token_chain` (TokenNode with ML-DSA-87 signatures, RefreshEdge, RevocationEdge) — acyclic enforcement, tokens are PQ-signed assertions not shared secrets
+- **State machine**: `session_lifecycle` (INITIATED → CHALLENGED → AUTHENTICATED → ACTIVE → EXPIRED → REVOKED)
+- **Overlays**: session_count, active_users, last_auth_ns, risk_score (identity_federation); validity_status, usage_count (token_chain)
+- **ai_feed**: auth_anomaly on identity_federation (unusual login patterns, geo-velocity, device fingerprint drift)
+- **Build**: FastLang `.fl` → ESCIR → Rust/WASM → `.escd`
+- **RBAC**: eStream `rbac.fl` composed via PolyKit profiles
 
 ## Architecture
 
-```
-Any Enterprise App
-    |
-    +-- OAuth 2.0 / OIDC redirect
-    |
-    v
-Poly OAuth Server
-    |
-    +-- SPARK Auth (ML-DSA-87 biometric on user's device)
-    +-- ML-DSA-87 signed tokens (PQ-safe JWT equivalent)
-    +-- Session state scatter-stored
-    +-- ESLM anomaly detection
-    |
-    v
-Token issued -> App authenticates user
-```
+See `docs/ARCHITECTURE.md` for full specification including graph/DAG constructs, FastLang circuits, standards compliance, ESLM anomaly detection, and enterprise integration design.
 
 ## Key Components
 
 | Component | Location | Purpose |
 |-----------|----------|---------|
-| OAuth Server | crates/poly-oauth-server/ | OAuth 2.0 / OIDC provider |
-| SAML Bridge | crates/saml-bridge/ | SAML 2.0 for legacy enterprise apps |
-| SCIM Provider | crates/scim/ | User provisioning |
-| Admin Console | apps/admin/ | Organization management |
-| SDK | packages/poly-oauth-sdk/ | Client integration library |
-
-## Key Differentiator
-
-First PQ biometric OAuth provider. Tokens signed with ML-DSA-87 (quantum-safe). No passwords to phish, no TOTP to intercept, no SMS to SIM-swap. Once an enterprise integrates Poly OAuth SSO, switching cost is enormous.
+| Identity Graph | `circuits/fl/graphs/polyoauth_identity_graph.fl` | Org/app/user/SP federation as typed graph |
+| Token DAG | `circuits/fl/graphs/polyoauth_token_dag.fl` | PQ-signed token chain with acyclic enforcement |
+| Auth Circuit | `circuits/fl/polyoauth_auth.fl` | SPARK challenge-response, ML-DSA-87 verification |
+| Token Circuit | `circuits/fl/polyoauth_token.fl` | PQ-JWT issuance, refresh, revocation |
+| Session Circuit | `circuits/fl/polyoauth_session.fl` | Session lifecycle management |
+| Risk Circuit | `circuits/fl/polyoauth_risk.fl` | ESLM risk scoring, anomaly evaluation |
+| SAML Bridge | `crates/saml-bridge/` | SAML 2.0 for legacy enterprise apps |
+| SCIM Provider | `crates/scim/` | User provisioning/deprovisioning |
+| OAuth Server | `crates/poly-oauth-server/` | OAuth 2.0 / OIDC / SAML provider |
+| Admin Console | `apps/admin/` | Organization and policy management |
+| Login UI | `apps/login/` | SPARK biometric login interface |
+| SDK | `packages/poly-oauth-sdk/` | Client integration library |
 
 ## No REST API (Internal)
 
-Internal management uses eStream Wire Protocol. External OAuth/OIDC endpoints follow the OAuth 2.0 standard (HTTP-based by specification) as the interop layer for third-party applications.
+Internal management uses eStream Wire Protocol. External OAuth/OIDC/SAML endpoints follow their respective standards (HTTP-based by specification) as the interop layer for third-party applications. SCIM endpoints are also HTTP (required by spec).
+
+## Pricing
+
+| Tier | Users | Price |
+|------|-------|-------|
+| Self-Service | Up to 100 | $2/user/mo |
+| Business | Up to 1000 (+ SAML, SCIM, conditional access) | $5/user/mo |
+| Enterprise | Unlimited (+ ESLM anomaly, PQ CA, multi-org) | Contract |
 
 ## Platform
 
-- eStream v0.8.1
-- ESCIR SmartCircuits
+- eStream v0.8.3
+- PolyKit v0.3.0
 - ML-KEM-1024, ML-DSA-87, SHA3-256
 - 8-Dimension metering
-- Compatible with: OAuth 2.0, OIDC, SAML 2.0, SCIM, FIDO2/WebAuthn
+- Blinded billing tokens
+- Compatible with: OAuth 2.0, OIDC, SAML 2.0, SCIM 2.0, FIDO2/WebAuthn
