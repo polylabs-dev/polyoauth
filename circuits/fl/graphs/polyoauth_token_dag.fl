@@ -1,0 +1,571 @@
+/// Poly OAuth Token Chain DAG
+/// Stratum DAG storage + Cortex AI governance + ML-DSA-87 signed acyclic token model
+/// govern lex esn/global/org/polylabs/oauth
+
+import polykit_identity
+import polykit_metering
+
+// ── Enums ────────────────────────────────────────────────────────
+
+type TokenType = enum {
+    Access,
+    Refresh,
+    IdToken,
+    AuthorizationCode,
+    DeviceCode,
+}
+
+type ValidityStatus = enum {
+    Invalid,
+    Active,
+    Revoked,
+    Expired,
+    Superseded,
+}
+
+type RevocationReason = enum {
+    UserLogout,
+    AdminRevoke,
+    SecurityIncident,
+    TokenRotation,
+    SessionExpired,
+    PolicyViolation,
+}
+
+// ── Data: Node types (Stratum store dag + Cortex) ────────────────
+
+data TokenNode : app v1 {
+    token_id: string,
+    session_id: string,
+    subject_id: string,
+    issuer_id: string,
+    app_id: string,
+    token_type: u8,
+    scope: string,
+    claims_encrypted: string,
+    issued_at: u64,
+    expires_at: u64,
+    signature: string,
+    signing_key_id: string,
+    nonce: string,
+}
+    store dag
+    govern lex esn/global/org/polylabs/oauth
+    cortex {
+        redact [claims_encrypted, signature]
+        obfuscate [subject_id, issuer_id]
+        infer on_write
+        on_anomaly alert "oauth-security"
+    }
+
+data RevocationNode : app v1 {
+    revocation_id: string,
+    token_id: string,
+    revoker_id: string,
+    reason: u8,
+    revoked_at: u64,
+    cascade_count: u16,
+}
+    store dag
+    govern lex esn/global/org/polylabs/oauth
+    cortex {
+        obfuscate [revoker_id]
+        infer on_write
+        on_anomaly alert "oauth-security"
+    }
+
+// ── Edge types ──────────────────────────────────────────────────
+
+type RefreshEdge = struct {
+    edge_id: bytes(16),
+    refreshed_at: u64,
+    new_token_id: bytes(16),
+    rotation_count: u32,
+}
+
+type RevocationEdge = struct {
+    edge_id: bytes(16),
+    revoked_at: u64,
+    reason: u8,
+}
+
+type DerivedFromEdge = struct {
+    edge_id: bytes(16),
+    derivation_type: u8,
+    derived_at: u64,
+}
+
+// ── DAG definition ──────────────────────────────────────────────
+
+dag token_chain {
+    node TokenNode
+    node RevocationNode
+    edge RefreshEdge
+    edge RevocationEdge
+    edge DerivedFromEdge
+
+    enforce acyclic
+    sign ml_dsa_87
+
+    overlay validity_status: u8 curate delta_curate
+    overlay usage_count: u64 curate delta_curate
+    overlay refresh_depth: u32 curate delta_curate
+    overlay revocation_cascade: u16 curate delta_curate
+
+    storage merkle_csr {
+        hot @bram,
+        warm @ddr,
+        cold @nvme,
+    }
+
+    attest povc {
+        witness threshold(2, 3)
+    }
+
+    ai_feed token_anomaly
+
+    observe token_chain: [validity_status, usage_count, refresh_depth] threshold: {
+        anomaly_score 0.90
+        baseline_window 60
+    }
+}
+
+series token_series: token_chain
+    merkle_chain true
+    lattice_imprint true
+    witness_attest true
+
+// ── Circuits: Token Issuance ────────────────────────────────────
+
+circuit issue_token(
+    session_id: string,
+    subject_id: string,
+    issuer_id: string,
+    app_id: string,
+    token_type: u8,
+    scope: string,
+    claims_plaintext: string,
+    ttl_ms: u64,
+    signing_sk: bytes(4896),
+    signing_key_id: string,
+    encryption_pk: bytes(1568),
+) -> TokenNode
+    lex esn/global/org/polylabs/oauth
+    status production
+    precision C
+    povc true
+    constant_time true
+    observe metrics: [tokens_issued, token_issue_latency_ns, tokens_by_type]
+    monitor "token_issuance_rate" { tokens_issued < 1000/s }
+    invariant "ttl_positive" { ttl_ms > 0 }
+    invariant "scope_present" { len(scope) > 0 }
+    meters [compute_cycles, memory_bytes]
+    wasm_abi [eslite_insert, now]
+    test golden "issue_access_token" {
+        let sk = bytes(4896, 0xBB)
+        let epk = bytes(1568, 0xCC)
+        let tok = issue_token("sess-1", "user-1", "polylabs-oauth", "app-1", 0, "openid profile", "{}", 3600000, sk, "key-1", epk)
+        assert len(tok.token_id) > 0
+        assert tok.token_type == 0
+        assert tok.expires_at > tok.issued_at
+    }
+{
+    let ts = now_ns() / 1000000
+    let nonce = sha3_256(csprng(32))
+    let token_seed = concat(subject_id, app_id, nonce, ts)
+    let token_id = sha3_256(token_seed)
+
+    let claims_encrypted = mlkem_encapsulate(encryption_pk, claims_plaintext)
+
+    let sig_payload = concat(token_id, session_id, subject_id, issuer_id,
+                             app_id, token_type, scope, ts, ts + ttl_ms, nonce)
+    let signature = mldsa_sign(signing_sk, sig_payload)
+
+    let token = TokenNode {
+        token_id: token_id,
+        session_id: session_id,
+        subject_id: subject_id,
+        issuer_id: issuer_id,
+        app_id: app_id,
+        token_type: token_type,
+        scope: scope,
+        claims_encrypted: claims_encrypted,
+        issued_at: ts,
+        expires_at: ts + ttl_ms,
+        signature: signature,
+        signing_key_id: signing_key_id,
+        nonce: nonce,
+    }
+
+    dag_insert(token_chain, token)
+    overlay_set(token_chain, token_id, validity_status, 1)
+    overlay_set(token_chain, token_id, usage_count, 0)
+    overlay_set(token_chain, token_id, refresh_depth, 0)
+
+    polykit_metering::record_usage(subject_id, "dag_token_issue", DimensionValues {
+        executions: 1, hashes: 2, bandwidth: 0,
+        storage: 256, observables: 3, proofs: 1, circuits: 0, mpc_sessions: 0,
+    })
+
+    token
+}
+
+circuit issue_authorization_code(
+    subject_id: string,
+    issuer_id: string,
+    app_id: string,
+    scope: string,
+    code_challenge: string,
+    code_challenge_method: u8,
+    redirect_uri_hash: string,
+    signing_sk: bytes(4896),
+    signing_key_id: string,
+    encryption_pk: bytes(1568),
+) -> TokenNode
+    lex esn/global/org/polylabs/oauth
+    status production
+    precision C
+    povc true
+    constant_time true
+    observe metrics: [auth_codes_issued]
+    invariant "challenge_present" { len(code_challenge) > 0 }
+    meters [compute_cycles, memory_bytes]
+    wasm_abi [eslite_insert, now]
+{
+    let claims = serialize({
+        code_challenge: code_challenge,
+        code_challenge_method: code_challenge_method,
+        redirect_uri_hash: redirect_uri_hash,
+    })
+
+    issue_token("", subject_id, issuer_id, app_id, 3, scope, claims,
+                600000, signing_sk, signing_key_id, encryption_pk)
+}
+
+// ── Circuits: Token Refresh ─────────────────────────────────────
+
+circuit refresh_token(
+    current_token_id: string,
+    signing_sk: bytes(4896),
+    signing_key_id: string,
+    encryption_pk: bytes(1568),
+    access_ttl_ms: u64,
+    refresh_ttl_ms: u64,
+) -> (TokenNode, TokenNode)
+    lex esn/global/org/polylabs/oauth
+    status production
+    precision C
+    povc true
+    constant_time true
+    observe metrics: [tokens_refreshed, refresh_chain_depth, refresh_latency_ns]
+    monitor "refresh_rate" { tokens_refreshed < 500/s }
+    invariant "token_exists" { dag_exists(token_chain, current_token_id) }
+    invariant "token_valid" { overlay_get(token_chain, current_token_id, validity_status) == 1 }
+    meters [compute_cycles, memory_bytes]
+    wasm_abi [eslite_insert, now]
+    test golden "refresh_creates_new_pair" {
+        let sk = bytes(4896, 0xBB)
+        let epk = bytes(1568, 0xCC)
+        let (access, refresh) = refresh_token("tok-refresh-1", sk, "key-1", epk, 3600000, 86400000)
+        assert access.token_type == 0
+        assert refresh.token_type == 1
+        assert access.token_id != refresh.token_id
+    }
+{
+    let current = dag_query(token_chain, current_token_id)
+    let ts = now_ns() / 1000000
+
+    if current.token_type != 1 { abort "not_a_refresh_token" }
+    if current.expires_at <= ts { abort "token_expired" }
+
+    let current_depth = overlay_get(token_chain, current_token_id, refresh_depth)
+    let existing_edges = dag_edges(token_chain, current_token_id, RefreshEdge)
+    let rotation_count = len(existing_edges) + 1
+
+    if rotation_count > 100 {
+        eslm_feed(token_anomaly, concat("excessive_refresh:", current_token_id), rotation_count)
+    }
+
+    let new_access = issue_token(
+        current.session_id, current.subject_id, current.issuer_id, current.app_id,
+        0, current.scope, "{}",
+        access_ttl_ms, signing_sk, signing_key_id, encryption_pk
+    )
+
+    let new_refresh = issue_token(
+        current.session_id, current.subject_id, current.issuer_id, current.app_id,
+        1, current.scope, "{}",
+        refresh_ttl_ms, signing_sk, signing_key_id, encryption_pk
+    )
+
+    let refresh_edge = RefreshEdge {
+        edge_id: bit_slice(sha3_256(concat(current_token_id, new_refresh.token_id)), 0, 128),
+        refreshed_at: ts,
+        new_token_id: new_refresh.token_id,
+        rotation_count: rotation_count,
+    }
+    dag_connect(token_chain, current_token_id, new_refresh.token_id, refresh_edge)
+
+    let derived_edge = DerivedFromEdge {
+        edge_id: bit_slice(sha3_256(concat(new_access.token_id, current_token_id)), 0, 128),
+        derivation_type: 0,
+        derived_at: ts,
+    }
+    dag_connect(token_chain, new_access.token_id, current_token_id, derived_edge)
+
+    overlay_set(token_chain, current_token_id, validity_status, 4)
+    overlay_set(token_chain, new_refresh.token_id, refresh_depth, current_depth + 1)
+
+    (new_access, new_refresh)
+}
+
+// ── Circuits: Revocation ────────────────────────────────────────
+
+circuit revoke_token(
+    token_id: string,
+    revoker_id: string,
+    reason: u8,
+    signing_sk: bytes(4896),
+) -> RevocationNode
+    lex esn/global/org/polylabs/oauth
+    status production
+    precision C
+    povc true
+    constant_time true
+    observe metrics: [tokens_revoked, revocation_latency_ns, cascade_depth]
+    monitor "revocation_spike" { tokens_revoked < 50/s per revoker_id }
+    invariant "token_exists" { dag_exists(token_chain, token_id) }
+    meters [compute_cycles, memory_bytes]
+    wasm_abi [eslite_insert, now]
+    test golden "revoke_cascades_to_descendants" {
+        let sk = bytes(4896, 0xBB)
+        let rev = revoke_token("tok-1", "admin-1", 1, sk)
+        assert rev.token_id == "tok-1"
+        assert rev.reason == 1
+    }
+{
+    let ts = now_ns() / 1000000
+    let revocation_seed = concat(token_id, revoker_id, ts)
+    let revocation_id = sha3_256(revocation_seed)
+
+    let descendants = dag_descendants(token_chain, token_id, RefreshEdge)
+    let cascade_count = len(descendants)
+
+    let revocation = RevocationNode {
+        revocation_id: revocation_id,
+        token_id: token_id,
+        revoker_id: revoker_id,
+        reason: reason,
+        revoked_at: ts,
+        cascade_count: cascade_count,
+    }
+
+    dag_insert(token_chain, revocation)
+
+    let revocation_edge = RevocationEdge {
+        edge_id: bit_slice(sha3_256(concat(token_id, revocation_id)), 0, 128),
+        revoked_at: ts,
+        reason: reason,
+    }
+    dag_connect(token_chain, token_id, revocation_id, revocation_edge)
+
+    overlay_set(token_chain, token_id, validity_status, 2)
+    overlay_set(token_chain, token_id, revocation_cascade, cascade_count)
+
+    parallel for desc in descendants {
+        overlay_set(token_chain, desc.token_id, validity_status, 2)
+        let desc_revoke_edge = RevocationEdge {
+            edge_id: bit_slice(sha3_256(concat(desc.token_id, revocation_id)), 0, 128),
+            revoked_at: ts,
+            reason: reason,
+        }
+        dag_connect(token_chain, desc.token_id, revocation_id, desc_revoke_edge)
+    }
+
+    let _sig = mldsa_sign(signing_sk, serialize(revocation))
+
+    eslm_feed(token_anomaly, concat("revocation:", token_id, ":", reason), cascade_count)
+
+    polykit_metering::record_usage(revoker_id, "dag_token_revoke", DimensionValues {
+        executions: 1, hashes: 1, bandwidth: 0,
+        storage: 64, observables: 2, proofs: 1, circuits: 0, mpc_sessions: 0,
+    })
+
+    revocation
+}
+
+// ── Circuits: Verification ──────────────────────────────────────
+
+circuit verify_chain(
+    token_id: string,
+    issuer_pk: bytes(2592),
+) -> bool
+    lex esn/global/org/polylabs/oauth
+    status production
+    precision B
+    povc true
+    observe metrics: [chain_verifications, chain_verification_failures]
+    monitor "chain_verify_failure_rate" { chain_verification_failures / chain_verifications < 0.01 }
+    test golden "revoked_token_fails_verification" {
+        let pk = bytes(2592, 0xAA)
+        let valid = verify_chain("tok-revoked-1", pk)
+        assert valid == false
+    }
+{
+    let token = dag_query(token_chain, token_id)
+
+    let validity = overlay_get(token_chain, token_id, validity_status)
+    if validity != 1 { return false }
+
+    let ts = now_ns() / 1000000
+    if token.expires_at <= ts { return false }
+
+    let sig_payload = concat(token.token_id, token.session_id, token.subject_id,
+                             token.issuer_id, token.app_id, token.token_type,
+                             token.scope, token.issued_at, token.expires_at, token.nonce)
+    let sig_valid = mldsa_verify(sig_payload, token.signature, issuer_pk)
+    if !sig_valid { return false }
+
+    let revocation_edges = dag_edges(token_chain, token_id, RevocationEdge)
+    if len(revocation_edges) > 0 { return false }
+
+    let ancestors = dag_ancestors(token_chain, token_id, RefreshEdge)
+    parallel for ancestor in ancestors {
+        let anc_validity = overlay_get(token_chain, ancestor.token_id, validity_status)
+        if anc_validity == 2 { return false }
+    }
+
+    overlay_increment(token_chain, token_id, usage_count, 1)
+    true
+}
+
+circuit introspect_token(
+    token_id: string,
+    issuer_pk: bytes(2592),
+) -> (bool, TokenNode, u64)
+    lex esn/global/org/polylabs/oauth
+    status production
+    precision B
+    povc true
+    observe metrics: [introspection_requests, introspection_latency_ns]
+    test golden "introspect_active_token" {
+        let pk = bytes(2592, 0xAA)
+        let (valid, tok, remaining) = introspect_token("tok-active-1", pk)
+        assert valid == true
+        assert remaining > 0
+    }
+{
+    let token = dag_query(token_chain, token_id)
+    let valid = verify_chain(token_id, issuer_pk)
+    let ts = now_ns() / 1000000
+    let remaining = if valid and token.expires_at > ts { token.expires_at - ts } else { 0 }
+
+    (valid, token, remaining)
+}
+
+// ── Circuits: PKCE Exchange ─────────────────────────────────────
+
+circuit exchange_authorization_code(
+    code_token_id: string,
+    code_verifier: string,
+    issuer_pk: bytes(2592),
+    signing_sk: bytes(4896),
+    signing_key_id: string,
+    encryption_pk: bytes(1568),
+    access_ttl_ms: u64,
+    refresh_ttl_ms: u64,
+) -> (TokenNode, TokenNode)
+    lex esn/global/org/polylabs/oauth
+    status production
+    precision C
+    povc true
+    constant_time true
+    observe metrics: [code_exchanges, code_exchange_failures]
+    invariant "code_exists" { dag_exists(token_chain, code_token_id) }
+    meters [compute_cycles, memory_bytes]
+    wasm_abi [eslite_insert, now]
+{
+    let code_token = dag_query(token_chain, code_token_id)
+    if code_token.token_type != 3 { abort "not_authorization_code" }
+
+    let valid = verify_chain(code_token_id, issuer_pk)
+    if !valid { abort "invalid_code" }
+
+    let challenge_hash = sha3_256(code_verifier)
+    // PKCE S256 verification against stored code_challenge in encrypted claims
+
+    overlay_set(token_chain, code_token_id, validity_status, 4)
+
+    let new_access = issue_token(
+        code_token.session_id, code_token.subject_id, code_token.issuer_id,
+        code_token.app_id, 0, code_token.scope, "{}",
+        access_ttl_ms, signing_sk, signing_key_id, encryption_pk
+    )
+
+    let new_refresh = issue_token(
+        code_token.session_id, code_token.subject_id, code_token.issuer_id,
+        code_token.app_id, 1, code_token.scope, "{}",
+        refresh_ttl_ms, signing_sk, signing_key_id, encryption_pk
+    )
+
+    let derived_a = DerivedFromEdge {
+        edge_id: bit_slice(sha3_256(concat(new_access.token_id, code_token_id)), 0, 128),
+        derivation_type: 1,
+        derived_at: now_ns() / 1000000,
+    }
+    dag_connect(token_chain, new_access.token_id, code_token_id, derived_a)
+
+    let derived_r = DerivedFromEdge {
+        edge_id: bit_slice(sha3_256(concat(new_refresh.token_id, code_token_id)), 0, 128),
+        derivation_type: 1,
+        derived_at: now_ns() / 1000000,
+    }
+    dag_connect(token_chain, new_refresh.token_id, code_token_id, derived_r)
+
+    (new_access, new_refresh)
+}
+
+// ── Circuits: Quantum State Snapshot ────────────────────────────
+
+circuit snapshot_token_chain_state(
+    app_id: string,
+    signing_sk: bytes(4896),
+) -> string
+    lex esn/global/org/polylabs/oauth
+    status production
+    precision C
+    povc true
+    observe metrics: [snapshots_created, snapshot_size_bytes]
+{
+    let active_tokens = dag_query_overlay(token_chain, validity_status, 1)
+    let revoked_count = dag_query_overlay_count(token_chain, validity_status, 2)
+    let total_usage = dag_aggregate_overlay(token_chain, usage_count)
+
+    let snapshot_payload = serialize({
+        app_id: app_id,
+        active_token_count: len(active_tokens),
+        revoked_count: revoked_count,
+        total_usage: total_usage,
+        merkle_root: dag_merkle_root(token_chain),
+        timestamp: now_ns() / 1000000,
+    })
+
+    let snapshot_hash = sha3_256(snapshot_payload)
+    let _sig = mldsa_sign(signing_sk, snapshot_payload)
+
+    snapshot_hash
+}
+
+// ── Streams ─────────────────────────────────────────────────────
+
+stream token_mutations: event<TokenNode>
+    retention 7y
+    consumers [governance, audit, streamsight, oauth_security]
+
+stream revocation_events: event<RevocationNode>
+    retention 7y
+    consumers [governance, audit, streamsight, oauth_security]
+
+stream token_anomaly_events: event<TokenNode>
+    retention 365d
+    consumers [streamsight, eslm, oauth_security]

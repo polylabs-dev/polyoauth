@@ -1,0 +1,264 @@
+// Poly OAuth Session — lifecycle management with risk-based step-up
+//
+// Lex Architecture:
+//   esn/global/org/polylabs/oauth/session
+//   Sessions follow strict state machine: INITIATED → CHALLENGED →
+//   AUTHENTICATED → ACTIVE → EXPIRED/REVOKED.
+//   Scatter-stored across providers, no single server holds full state.
+
+import polykit_identity
+import polykit_metering
+
+type SessionState = enum {
+    Initiated,
+    Challenged,
+    Authenticated,
+    Active,
+    Expired,
+    Revoked,
+}
+
+type DeviceFingerprint = struct {
+    device_id: bytes(16),
+    platform_hash: bytes(32),
+    user_agent_hash: bytes(32),
+    screen_hash: bytes(16),
+    timezone_offset: i16,
+    language_hash: bytes(8),
+}
+
+type SessionMetadata = struct {
+    session_id: bytes(16),
+    user_id: bytes(16),
+    state: SessionState,
+    device: DeviceFingerprint,
+    geo_hash: bytes(8),
+    ip_hash: bytes(32),
+    auth_method: u8,
+    auth_strength: u8,
+    risk_score_at_auth: u16,
+    created_at: u64,
+    last_active_at: u64,
+    expires_at: u64,
+    challenge_id: bytes(16),
+}
+
+type SessionTransition = struct {
+    session_id: bytes(16),
+    from_state: SessionState,
+    to_state: SessionState,
+    trigger: string,
+    timestamp_ns: u64,
+    signature: bytes(4627),
+}
+
+state_machine session_lifecycle {
+    initial Initiated
+    persistence wal
+    terminal [Expired, Revoked]
+    li_anomaly_detection true
+
+    Initiated -> Challenged when challenge_issued guard device_registered
+    Challenged -> Authenticated when spark_verified guard signature_valid
+    Challenged -> Initiated when challenge_timeout
+    Authenticated -> Active when risk_acceptable guard risk_below_threshold
+    Authenticated -> Challenged when risk_step_up guard risk_above_threshold
+    Authenticated -> Revoked when risk_blocked guard risk_critical
+    Active -> Active when token_refreshed guard refresh_valid
+    Active -> Expired when session_timeout
+    Active -> Revoked when user_logout
+    Active -> Revoked when admin_revoked
+}
+
+// --- Create a new session (INITIATED state) ---
+circuit create_session(user_id: bytes(16), device: DeviceFingerprint, geo_hash: bytes(8), ip_hash: bytes(32)) -> SessionMetadata
+    profile poly_framework_sensitive
+    lex esn/global/org/polylabs/oauth/session
+    constant_time true
+    observe metrics: [sessions_created, session_create_latency_ns]
+    monitor "session_creation_rate" { sessions_created < 50/s per user_id }
+    invariant "device_present" { len(device.device_id) == 16 }
+    meters [compute_cycles, memory_bytes]
+    test golden "create_session_basic" {
+        let uid = bytes(16, 0x01)
+        let dev = DeviceFingerprint {
+            device_id: bytes(16, 0xAA), platform_hash: bytes(32, 0xBB),
+            user_agent_hash: bytes(32, 0xCC), screen_hash: bytes(16, 0xDD),
+            timezone_offset: -480, language_hash: bytes(8, 0xEE),
+        }
+        let session = create_session(uid, dev, bytes(8, 0x01), bytes(32, 0x02))
+        assert len(session.session_id) == 16
+        assert session.state == SessionState::Initiated
+    }
+    kat_vector "hkdf_sha3_session" {
+        ikm: bytes(32, 0xAA)
+        info: bytes(16, 0x01)
+        length: 32
+        function: hkdf_sha3
+    }
+{
+    let ts = now_ns() / 1000000
+    let session_seed = concat(user_id, device.device_id, csprng(16), ts)
+    let session_id = bit_slice(sha3_256(session_seed), 0, 128)
+
+    let session = SessionMetadata {
+        session_id: session_id,
+        user_id: user_id,
+        state: SessionState::Initiated,
+        device: device,
+        geo_hash: geo_hash,
+        ip_hash: ip_hash,
+        auth_method: 0,
+        auth_strength: 0,
+        risk_score_at_auth: 0,
+        created_at: ts,
+        last_active_at: ts,
+        expires_at: ts + 86400000,
+        challenge_id: zero(16),
+    }
+
+    transition(session_lifecycle, session.session_id, SessionState::Initiated)
+
+    polykit_metering::record_usage(user_id, "session_create", DimensionValues {
+        executions: 1, hashes: 1, bandwidth: 0,
+        storage: 256, observables: 1, proofs: 0, circuits: 0, mpc_sessions: 0,
+    })
+
+    session
+}
+
+// --- Transition session to AUTHENTICATED after SPARK verification ---
+circuit authenticate_session(
+    session: SessionMetadata,
+    challenge_id: bytes(16),
+    auth_method: u8,
+    auth_strength: u8,
+    risk_score: u16,
+    signing_sk: bytes(4896)
+) -> (SessionMetadata, SessionTransition)
+    profile poly_framework_sensitive
+    lex esn/global/org/polylabs/oauth/session
+    constant_time true
+    observe metrics: [sessions_authenticated, auth_session_latency_ns]
+    invariant "valid_state" { session.state == SessionState::Challenged }
+    invariant "challenge_match" { session.challenge_id == challenge_id }
+    meters [compute_cycles, memory_bytes]
+{
+    let ts = now_ns() / 1000000
+
+    let risk_critical = risk_score > 800
+    let risk_elevated = risk_score > 500
+
+    let target_state = match true {
+        risk_critical => SessionState::Revoked,
+        risk_elevated => SessionState::Challenged,
+        _ => SessionState::Authenticated,
+    }
+
+    let trigger = match target_state {
+        SessionState::Revoked => "risk_blocked",
+        SessionState::Challenged => "risk_step_up",
+        SessionState::Authenticated => "spark_verified",
+    }
+
+    let updated = SessionMetadata {
+        ..session,
+        state: target_state,
+        auth_method: auth_method,
+        auth_strength: auth_strength,
+        risk_score_at_auth: risk_score,
+        last_active_at: ts,
+    }
+
+    let transition_payload = concat(session.session_id, session.state, target_state, ts)
+    let transition_sig = mldsa_sign(signing_sk, transition_payload)
+
+    let trans = SessionTransition {
+        session_id: session.session_id,
+        from_state: session.state,
+        to_state: target_state,
+        trigger: trigger,
+        timestamp_ns: ts * 1000000,
+        signature: transition_sig,
+    }
+
+    transition(session_lifecycle, session.session_id, target_state)
+    (updated, trans)
+}
+
+// --- Refresh an active session, extending expiry ---
+circuit refresh_session(session: SessionMetadata, new_geo_hash: bytes(8), new_ip_hash: bytes(32)) -> SessionMetadata
+    profile poly_framework_standard
+    lex esn/global/org/polylabs/oauth/session
+    observe metrics: [sessions_refreshed, refresh_latency_ns]
+    invariant "active_state" { session.state == SessionState::Active }
+    invariant "not_expired" { session.expires_at > now_ns() / 1000000 }
+    meters [compute_cycles, memory_bytes]
+{
+    let ts = now_ns() / 1000000
+
+    let geo_changed = new_geo_hash != session.geo_hash
+    let ip_changed = new_ip_hash != session.ip_hash
+
+    let extension = match (geo_changed, ip_changed) {
+        (true, true) => 1800000,
+        (true, false) => 3600000,
+        (false, true) => 3600000,
+        (false, false) => 86400000,
+    }
+
+    transition(session_lifecycle, session.session_id, SessionState::Active)
+
+    SessionMetadata {
+        ..session,
+        geo_hash: new_geo_hash,
+        ip_hash: new_ip_hash,
+        last_active_at: ts,
+        expires_at: ts + extension,
+    }
+}
+
+// --- Revoke a session (terminal state) ---
+circuit revoke_session(session: SessionMetadata, revoker_id: bytes(16), signing_sk: bytes(4896)) -> SessionTransition
+    profile poly_framework_sensitive
+    lex esn/global/org/polylabs/oauth/session
+    constant_time true
+    observe metrics: [sessions_revoked, revocation_latency_ns]
+    invariant "revocable_state" { session.state != SessionState::Expired and session.state != SessionState::Revoked }
+    meters [compute_cycles, memory_bytes]
+{
+    let ts = now_ns() / 1000000
+    let payload = concat(session.session_id, revoker_id, SessionState::Revoked, ts)
+    let sig = mldsa_sign(signing_sk, payload)
+
+    transition(session_lifecycle, session.session_id, SessionState::Revoked)
+
+    SessionTransition {
+        session_id: session.session_id,
+        from_state: session.state,
+        to_state: SessionState::Revoked,
+        trigger: if revoker_id == session.user_id { "user_logout" } else { "admin_revoked" },
+        timestamp_ns: ts * 1000000,
+        signature: sig,
+    }
+}
+
+// --- Check session validity ---
+circuit check_session(session: SessionMetadata) -> (bool, SessionState)
+    profile poly_framework_standard
+    lex esn/global/org/polylabs/oauth/session
+    observe metrics: [session_checks]
+{
+    let ts = now_ns() / 1000000
+    let expired = session.expires_at <= ts
+    let terminal = session.state == SessionState::Expired or session.state == SessionState::Revoked
+
+    if expired and !terminal {
+        transition(session_lifecycle, session.session_id, SessionState::Expired)
+        (false, SessionState::Expired)
+    } else if terminal {
+        (false, session.state)
+    } else {
+        (session.state == SessionState::Active, session.state)
+    }
+}

@@ -1,0 +1,98 @@
+[package]
+name = "@polylabs/polyoauth"
+version = "0.1.0"
+description = "PQ biometric SSO/identity provider — SPARK-based authentication, token grants, federation, and risk-adaptive session management"
+license = "Apache-2.0"
+repository = "https://github.com/polylabs-dev/polyoauth"
+homepage = "https://polylabs.dev/polyoauth"
+readme = "README.md"
+keywords = ["oauth", "sso", "biometric", "spark", "identity", "federation", "pq-crypto", "risk-assessment"]
+category = "smart-circuit"
+implementation_type = "FastLang"
+status = "Active"
+
+[publisher]
+id = "b7e3a1d9f04c28561ea7b3c0d5f29184a6e80b7cd3f491025e8a6b7c0d3f4e5a"
+name = "Poly Labs"
+signing_key_id = "polylabs-signing-key-01"
+email = "engineering@polylabs.dev"
+url = "https://github.com/polylabs-dev"
+
+[escir]
+api_version = "0.9.1"
+min_platform_version = "0.9.1"
+max_platform_version = "1.0.0"
+
+[lex]
+requirements = [
+    "esn/polylabs/polyoauth/sessions",
+    "esn/polylabs/polyoauth/tokens",
+    "esn/polylabs/polyoauth/federation",
+    "esn/marketplace/licensing",
+]
+
+[dependencies]
+estream-spark-auth = "^0.9.1"
+estream-eslite = "^0.9.1"
+estream-rbac = "^0.9.1"
+
+[pricing]
+license_type = "per-seat"
+share_price = "3.99"
+private_price = "6.99"
+
+[telemetry]
+schema_hash = "auto"
+metrics = [
+    "auth_attempts",
+    "token_grants",
+    "biometric_verifications",
+    "federation_requests",
+    "risk_assessments",
+    "session_creates",
+]
+aggregate_window = "1h"
+cohort_min_size = 50
+noise_budget = "1.0"
+
+[schemas]
+provides = [
+    "AuthAttempt",
+    "TokenGrant",
+    "BiometricProof",
+    "FederationRequest",
+    "RiskAssessment",
+    "SessionRecord",
+]
+requires = ["SparkIdentity", "ESLiteStore", "RbacPolicy"]
+
+[circuits]
+provides = [
+    "authenticate",
+    "grant_token",
+    "verify_biometric",
+    "federate_identity",
+    "assess_risk",
+    "create_session",
+]
+target = ["cpu"]
+
+[lifecycle]
+status = "active"
+breaking_change_notice_days = 90
+changelog = "CHANGELOG.md"
+
+[author]
+name = "Poly Labs"
+email = "engineering@polylabs.dev"
+url = "https://github.com/polylabs-dev"
+
+[marketplace]
+pricing = "usage-based"
+visibility = "compiled"
+
+[include]
+schemas = ["schemas/*.data.yaml"]
+circuits = ["circuits/*.fl"]
+tests = ["test_vectors/*.esz"]
+docs = ["docs/*.md", "README.md"]

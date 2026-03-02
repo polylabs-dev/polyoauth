@@ -1,0 +1,239 @@
+// Poly OAuth Risk — ESLM-powered authentication risk scoring
+//
+// Lex Architecture:
+//   esn/global/org/polylabs/oauth/risk
+//   On-device ESLM for initial scoring; server-side for cross-session correlation.
+//   ai_feed auth_anomaly drives behavioral baseline learning.
+//   Risk factors: geo-velocity, device trust, temporal patterns, network signals.
+
+import polykit_identity
+import polykit_metering
+
+type RiskScore = struct {
+    overall: u16,
+    geo_velocity: u16,
+    device_trust: u16,
+    temporal: u16,
+    network: u16,
+    behavioral: u16,
+    requires_step_up: bool,
+    requires_block: bool,
+}
+
+type RiskFactors = struct {
+    user_id: bytes(16),
+    device_fingerprint_hash: bytes(32),
+    geo_hash: bytes(8),
+    ip_hash: bytes(32),
+    timestamp_ns: u64,
+    user_agent_hash: bytes(32),
+    is_known_device: bool,
+    is_known_network: bool,
+    auth_method: u8,
+}
+
+type AnomalySignal = struct {
+    signal_type: u8,
+    severity: u16,
+    description_hash: bytes(32),
+    evidence_hash: bytes(32),
+    timestamp_ns: u64,
+}
+
+type GeoVelocity = struct {
+    previous_geo_hash: bytes(8),
+    current_geo_hash: bytes(8),
+    previous_timestamp_ns: u64,
+    current_timestamp_ns: u64,
+    distance_km: u32,
+    time_delta_s: u64,
+    velocity_kmh: u32,
+    impossible_travel: bool,
+}
+
+type UserBaseline = struct {
+    user_id: bytes(16),
+    typical_geo_hashes: [bytes(8); 8],
+    typical_hours: bytes(3),
+    known_devices: [bytes(32); 8],
+    known_networks: [bytes(32); 8],
+    avg_session_duration_ms: u64,
+    login_frequency_per_day: u16,
+    last_updated: u64,
+}
+
+ai_feed auth_anomaly {
+    input: RiskFactors,
+    output: AnomalySignal,
+    model: eslm_v1,
+    baseline_window: 120,
+    anomaly_threshold: 0.85,
+}
+
+// --- Evaluate overall risk for an authentication attempt ---
+circuit evaluate_risk(factors: RiskFactors, baseline: UserBaseline) -> RiskScore
+    profile poly_framework_sensitive
+    lex esn/global/org/polylabs/oauth/risk
+    constant_time true
+    observe metrics: [risk_evaluations, high_risk_count, step_up_triggers, block_triggers]
+    monitor "risk_evaluation_latency" { risk_eval_latency_ns < 5000000 }
+    invariant "score_bounded" { overall <= 1000 }
+    meters [compute_cycles, memory_bytes]
+    test golden "evaluate_low_risk" {
+        let factors = RiskFactors {
+            user_id: bytes(16, 0x01), device_fingerprint_hash: bytes(32, 0xAA),
+            geo_hash: bytes(8, 0x01), ip_hash: bytes(32, 0xBB),
+            timestamp_ns: 1000000000000, user_agent_hash: bytes(32, 0xCC),
+            is_known_device: true, is_known_network: true, auth_method: 0,
+        }
+        let baseline = UserBaseline {
+            user_id: bytes(16, 0x01), typical_geo_hashes: [bytes(8, 0x01); 8],
+            typical_hours: bytes(3, 0xFF), known_devices: [bytes(32, 0xAA); 8],
+            known_networks: [bytes(32, 0xBB); 8], avg_session_duration_ms: 3600000,
+            login_frequency_per_day: 5, last_updated: 0,
+        }
+        let score = evaluate_risk(factors, baseline)
+        assert score.overall <= 200
+        assert score.requires_step_up == false
+    }
+{
+    let geo = check_geo_velocity(factors.user_id, factors.geo_hash, factors.timestamp_ns, baseline)
+    let device = score_device_trust(factors.device_fingerprint_hash, factors.is_known_device, baseline)
+    let anomaly = detect_anomaly(factors, baseline)
+
+    let temporal = score_temporal(factors.timestamp_ns, baseline)
+    let network = if factors.is_known_network { 0 } else { 200 }
+
+    let geo_weight = 300
+    let device_weight = 250
+    let temporal_weight = 150
+    let network_weight = 100
+    let behavioral_weight = 200
+
+    let weighted_sum = (geo.velocity_kmh > 1000 ? 1000 : geo_score(geo)) * geo_weight / 1000 +
+                       device * device_weight / 1000 +
+                       temporal * temporal_weight / 1000 +
+                       network * network_weight / 1000 +
+                       anomaly.severity * behavioral_weight / 1000
+
+    let overall = min(weighted_sum, 1000)
+
+    RiskScore {
+        overall: overall,
+        geo_velocity: geo_score(geo),
+        device_trust: device,
+        temporal: temporal,
+        network: network,
+        behavioral: anomaly.severity,
+        requires_step_up: overall > 500,
+        requires_block: overall > 800,
+    }
+}
+
+// --- Check geo-velocity (impossible travel detection) ---
+circuit check_geo_velocity(user_id: bytes(16), current_geo: bytes(8), current_ts: u64, baseline: UserBaseline) -> GeoVelocity
+    profile poly_framework_standard
+    lex esn/global/org/polylabs/oauth/risk
+    observe metrics: [geo_velocity_checks, impossible_travel_detections]
+    monitor "impossible_travel_rate" { impossible_travel_detections < 5/s }
+{
+    let last_session = load_last_session(user_id)
+    let prev_geo = last_session.geo_hash
+    let prev_ts = last_session.timestamp_ns
+
+    let distance_km = geohash_distance(prev_geo, current_geo)
+    let time_delta_s = (current_ts - prev_ts) / 1000000000
+
+    let velocity_kmh = if time_delta_s > 0 { distance_km * 3600 / time_delta_s } else { 999999 }
+
+    let impossible = velocity_kmh > 1000
+
+    let is_known_location = array_contains(baseline.typical_geo_hashes, current_geo)
+
+    GeoVelocity {
+        previous_geo_hash: prev_geo,
+        current_geo_hash: current_geo,
+        previous_timestamp_ns: prev_ts,
+        current_timestamp_ns: current_ts,
+        distance_km: distance_km,
+        time_delta_s: time_delta_s,
+        velocity_kmh: velocity_kmh,
+        impossible_travel: impossible and !is_known_location,
+    }
+}
+
+// --- Score device trust level ---
+circuit score_device_trust(device_hash: bytes(32), is_known: bool, baseline: UserBaseline) -> u16
+    profile poly_framework_standard
+    lex esn/global/org/polylabs/oauth/risk
+    observe metrics: [device_trust_evaluations, unknown_device_count]
+{
+    let in_baseline = array_contains(baseline.known_devices, device_hash)
+
+    match (is_known, in_baseline) {
+        (true, true) => 0,
+        (true, false) => 200,
+        (false, true) => 300,
+        (false, false) => 700,
+    }
+}
+
+// --- Detect behavioral anomalies via ESLM ---
+circuit detect_anomaly(factors: RiskFactors, baseline: UserBaseline) -> AnomalySignal
+    profile poly_framework_sensitive
+    lex esn/global/org/polylabs/oauth/risk
+    observe metrics: [anomaly_detections, anomaly_severity_sum]
+    monitor "anomaly_rate" { anomaly_detections < 20/s }
+{
+    let eslm_result = eslm_evaluate(auth_anomaly, factors)
+
+    let freq_deviation = abs(login_count_today(factors.user_id) - baseline.login_frequency_per_day)
+    let freq_anomaly = freq_deviation > baseline.login_frequency_per_day * 3
+
+    let severity = eslm_result.confidence * 1000
+    let combined = if freq_anomaly { min(severity + 200, 1000) } else { severity }
+
+    AnomalySignal {
+        signal_type: eslm_result.signal_type,
+        severity: combined,
+        description_hash: sha3_256(eslm_result.description),
+        evidence_hash: sha3_256(serialize(factors)),
+        timestamp_ns: now_ns(),
+    }
+}
+
+// --- Update user baseline from successful authentication ---
+circuit update_baseline(user_id: bytes(16), factors: RiskFactors, current_baseline: UserBaseline) -> UserBaseline
+    profile poly_framework_standard
+    lex esn/global/org/polylabs/oauth/risk
+    observe metrics: [baseline_updates]
+    invariant "baseline_owner" { user_id == current_baseline.user_id }
+    meters [compute_cycles, memory_bytes]
+    wasm_abi [eslite_insert, now]
+{
+    let ts = now_ns() / 1000000
+
+    let updated_geos = ring_insert(current_baseline.typical_geo_hashes, factors.geo_hash)
+    let updated_devices = ring_insert(current_baseline.known_devices, factors.device_fingerprint_hash)
+    let updated_networks = ring_insert(current_baseline.known_networks, factors.ip_hash)
+
+    let hour = extract_hour(factors.timestamp_ns)
+    let updated_hours = bitmask_set(current_baseline.typical_hours, hour)
+
+    let updated_freq = ewma(current_baseline.login_frequency_per_day,
+                            login_count_today(user_id), 0.1)
+
+    let updated = UserBaseline {
+        user_id: user_id,
+        typical_geo_hashes: updated_geos,
+        typical_hours: updated_hours,
+        known_devices: updated_devices,
+        known_networks: updated_networks,
+        avg_session_duration_ms: current_baseline.avg_session_duration_ms,
+        login_frequency_per_day: updated_freq,
+        last_updated: ts,
+    }
+
+    eslite_insert(user_id, updated)
+    updated
+}

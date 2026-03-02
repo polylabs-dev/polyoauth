@@ -2,7 +2,7 @@
 
 **Version**: 3.0
 **Date**: February 2026
-**Platform**: eStream v0.8.3
+**Platform**: eStream v0.9.1
 **Upstream**: PolyKit v0.3.0, eStream scatter-cas, graph/DAG constructs
 **Build Pipeline**: FastLang (.fl) → ESCIR → Rust/WASM codegen → .escd
 
@@ -21,7 +21,7 @@ Poly OAuth is the first post-quantum biometric OAuth/OIDC identity provider. It 
 | Session state | Implicit | `state_machine session_lifecycle` (INITIATED → REVOKED) |
 | Circuit format | ESCIR YAML (`circuit.escir.yaml`) | FastLang `.fl` with PolyKit profiles |
 | RBAC | Per-circuit annotations | eStream `rbac.fl` composed via PolyKit |
-| Platform | eStream v0.8.1 | eStream v0.8.3 |
+| Platform | eStream v0.8.1 | eStream v0.9.1 |
 
 ---
 
@@ -216,71 +216,92 @@ All stream topics, organization membership, and session state reference this SPA
 
 ### Identity Federation Graph (`polyoauth_identity_graph.fl`)
 
-The identity model is a typed graph. Organizations, applications, user sessions, and service providers are nodes; authorization relationships, membership, and sessions are edges. Overlays provide real-time federation state (session counts, active users, risk scores) without mutating the base graph.
+The identity model is a typed graph with Stratum storage and Cortex AI governance. Organizations, applications, user sessions, and service providers are `data` nodes with field-level privacy policies; authorization relationships, membership, sessions, and federation are edges. Overlays provide real-time federation state (session counts, active users, risk scores) without mutating the base graph.
 
 ```fastlang
-type OrganizationNode = struct {
-    org_id: bytes(16),
-    name: bytes(256),
-    domain: bytes(256),
+data OrganizationNode : app v1 {
+    org_id: string,
+    name: string,
+    domain: string,
     tier: u8,
-    saml_metadata_hash: bytes(32),
-    scim_endpoint_hash: bytes(32),
+    admin_id: string,
+    billing_email: string,
+    saml_metadata_hash: string,
+    scim_endpoint_hash: string,
+    max_users: u32,
+    mfa_policy: u8,
     created_at: u64,
     updated_at: u64,
 }
+    store graph
+    govern lex esn/global/org/polylabs/oauth
+    cortex {
+        obfuscate [admin_id, billing_email]
+        infer on_write
+        on_anomaly alert "oauth-team"
+    }
 
-type ApplicationNode = struct {
-    app_id: bytes(16),
-    org_id: bytes(16),
-    name: bytes(256),
-    redirect_uris_hash: bytes(32),
+data ApplicationNode : app v1 {
+    app_id: string,
+    org_id: string,
+    name: string,
+    owner_id: string,
+    client_secret_hash: string,
+    redirect_uris_hash: string,
     grant_types: u16,
     client_type: u8,
-    tags: bytes(128),
+    allowed_scopes: string,
+    tags: string,
     created_at: u64,
 }
+    store graph
+    govern lex esn/global/org/polylabs/oauth
+    cortex {
+        redact [client_secret_hash]
+        obfuscate [owner_id]
+        infer on_write
+        on_anomaly alert "oauth-security"
+    }
 
-type UserSessionNode = struct {
-    session_id: bytes(16),
-    user_id: bytes(16),
-    device_fingerprint_hash: bytes(32),
-    geo_hash: bytes(8),
+data UserSessionNode : app v1 {
+    session_id: string,
+    user_id: string,
+    token_hash: string,
+    device_fingerprint: string,
+    ip_address: string,
+    geo_hash: string,
     auth_method: u8,
     risk_score_at_auth: u16,
+    step_up_count: u8,
     created_at: u64,
     expires_at: u64,
 }
+    store graph
+    govern lex esn/global/org/polylabs/oauth
+    cortex {
+        redact [token_hash, device_fingerprint]
+        obfuscate [user_id, ip_address]
+        infer on_write
+        on_anomaly alert "oauth-security"
+        on_suggestion store "cortex/oauth/suspicious_sessions"
+    }
 
-type ServiceProviderNode = struct {
-    sp_id: bytes(16),
-    org_id: bytes(16),
+data ServiceProviderNode : app v1 {
+    sp_id: string,
+    org_id: string,
     protocol: u8,
-    metadata_hash: bytes(32),
-    assertion_consumer_url_hash: bytes(32),
+    admin_contact: string,
+    metadata_hash: string,
+    assertion_consumer_url_hash: string,
+    name_id_format: u8,
     created_at: u64,
 }
-
-type AuthorizesEdge = struct {
-    scope: bytes(256),
-    granted_at: u64,
-    granted_by: bytes(16),
-    expires_at: u64,
-    conditional_policy_hash: bytes(32),
-}
-
-type BelongsToEdge = struct {
-    role: u8,
-    joined_at: u64,
-    provisioned_via: u8,
-}
-
-type SessionEdge = struct {
-    auth_timestamp_ns: u64,
-    device_id: bytes(16),
-    ip_hash: bytes(32),
-    user_agent_hash: bytes(32),
-}
+    store graph
+    govern lex esn/global/org/polylabs/oauth
+    cortex {
+        obfuscate [admin_contact]
+        infer on_read
+    }
 
 graph identity_federation {
     node OrganizationNode
@@ -290,11 +311,14 @@ graph identity_federation {
     edge AuthorizesEdge
     edge BelongsToEdge
     edge SessionEdge
+    edge FederatesWithEdge
 
-    overlay session_count: u64 bitmask delta_curate
-    overlay active_users: u64 bitmask delta_curate
-    overlay last_auth_ns: u64 bitmask delta_curate
+    overlay session_count: u64 curate delta_curate
+    overlay active_users: u64 curate delta_curate
+    overlay last_auth_ns: u64 curate delta_curate
     overlay risk_score: u16 curate delta_curate
+    overlay app_count: u16 curate delta_curate
+    overlay sp_count: u16 curate delta_curate
 
     storage csr {
         hot @bram,
@@ -305,7 +329,7 @@ graph identity_federation {
     ai_feed auth_anomaly
 
     observe identity_federation: [session_count, active_users, risk_score] threshold: {
-        anomaly_score 0.85
+        anomaly_score 0.90
         baseline_window 120
     }
 }
@@ -316,59 +340,84 @@ series identity_series: identity_federation
     witness_attest true
 ```
 
-The `ai_feed auth_anomaly` drives ESLM-powered detection of unusual login patterns, geo-velocity violations (impossible travel), and device fingerprint drift. Risk scores are computed per-session and attached as overlays.
+The `ai_feed auth_anomaly` drives ESLM-powered detection of unusual login patterns, geo-velocity violations (impossible travel), and device fingerprint drift. Risk scores are computed per-session and attached as overlays. Cortex `infer on_write` triggers risk scoring on every session creation and org mutation; `on_suggestion store` routes suspicious sessions to a review queue.
 
-Key circuits: `create_org`, `register_app`, `create_session`, `register_sp`, `authorize_app`, `provision_user`, `evaluate_risk`.
+Key circuits: `create_org`, `register_app`, `create_session`, `register_sp`, `authorize_app`, `establish_federation`, `evaluate_risk`, `snapshot_org_quantum_state`.
 
 ### Token Chain DAG (`polyoauth_token_dag.fl`)
 
-Tokens are modeled as a DAG, not as opaque blobs. Each token is an ML-DSA-87 signed assertion (not a shared secret). Refresh and revocation are explicit edges. The DAG enforces acyclicity — a revoked token cannot be un-revoked, and refresh chains are strictly forward.
+Tokens are modeled as a DAG with Stratum merkle-CSR storage, Cortex AI governance, and POVC witness attestation. Each token is an ML-DSA-87 signed assertion (not a shared secret). Refresh and revocation are explicit edges. Revocations are first-class DAG nodes with their own Cortex policy. The DAG enforces acyclicity — a revoked token cannot be un-revoked, and refresh chains are strictly forward.
 
 ```fastlang
-type TokenNode = struct {
-    token_id: bytes(16),
-    session_id: bytes(16),
-    user_id: bytes(16),
-    app_id: bytes(16),
+data TokenNode : app v1 {
+    token_id: string,
+    session_id: string,
+    subject_id: string,
+    issuer_id: string,
+    app_id: string,
     token_type: u8,
-    scope: bytes(256),
+    scope: string,
+    claims_encrypted: string,
     issued_at: u64,
     expires_at: u64,
-    signature: bytes(4627),
-    signing_key_id: bytes(32),
+    signature: string,
+    signing_key_id: string,
+    nonce: string,
 }
+    store dag
+    govern lex esn/global/org/polylabs/oauth
+    cortex {
+        redact [claims_encrypted, signature]
+        obfuscate [subject_id, issuer_id]
+        infer on_write
+        on_anomaly alert "oauth-security"
+    }
 
-type RefreshEdge = struct {
-    refreshed_at: u64,
-    new_token_id: bytes(16),
-    rotation_count: u32,
-}
-
-type RevocationEdge = struct {
-    revoked_at: u64,
-    revoked_by: bytes(16),
+data RevocationNode : app v1 {
+    revocation_id: string,
+    token_id: string,
+    revoker_id: string,
     reason: u8,
+    revoked_at: u64,
+    cascade_count: u16,
 }
+    store dag
+    govern lex esn/global/org/polylabs/oauth
+    cortex {
+        obfuscate [revoker_id]
+        infer on_write
+        on_anomaly alert "oauth-security"
+    }
 
 dag token_chain {
     node TokenNode
+    node RevocationNode
     edge RefreshEdge
     edge RevocationEdge
+    edge DerivedFromEdge
 
     enforce acyclic
     sign ml_dsa_87
 
     overlay validity_status: u8 curate delta_curate
-    overlay usage_count: u64 bitmask delta_curate
+    overlay usage_count: u64 curate delta_curate
+    overlay refresh_depth: u32 curate delta_curate
+    overlay revocation_cascade: u16 curate delta_curate
 
-    storage csr {
+    storage merkle_csr {
         hot @bram,
         warm @ddr,
         cold @nvme,
     }
 
-    observe token_chain: [validity_status, usage_count] threshold: {
-        anomaly_score 0.9
+    attest povc {
+        witness threshold(2, 3)
+    }
+
+    ai_feed token_anomaly
+
+    observe token_chain: [validity_status, usage_count, refresh_depth] threshold: {
+        anomaly_score 0.90
         baseline_window 60
     }
 }
@@ -379,7 +428,7 @@ series token_series: token_chain
     witness_attest true
 ```
 
-Key circuits: `issue_token`, `refresh_token`, `revoke_token`, `verify_token`, `introspect_token`.
+Key circuits: `issue_token`, `issue_authorization_code`, `refresh_token`, `revoke_token`, `verify_chain`, `introspect_token`, `exchange_authorization_code`, `snapshot_token_chain_state`.
 
 ### Session Lifecycle State Machine (`polyoauth_session_lifecycle.fl`)
 
@@ -406,6 +455,84 @@ state_machine session_lifecycle {
 ```
 
 State transitions update the `session_count`, `active_users`, and `risk_score` overlays on `identity_federation`. The `observe` block flags anomalies (e.g., mass session creation, unusual geo-velocity patterns, simultaneous sessions from incompatible locations).
+
+---
+
+## Stratum & Cortex Integration
+
+Poly OAuth v3.0 fully composes eStream's Stratum storage engine and Cortex AI governance layer. Every `data` node type declares its storage binding (`store graph` or `store dag`), lex governance path (`govern lex`), and field-level Cortex visibility policy (`cortex {}`).
+
+### Stratum Storage Bindings
+
+| Construct | Storage Type | Stratum Backend | Purpose |
+|-----------|-------------|-----------------|---------|
+| `graph identity_federation` | `storage csr { hot @bram, warm @ddr, cold @nvme }` | Compressed Sparse Row graph | Org/app/user/SP federation with tiered hot-warm-cold placement |
+| `dag token_chain` | `storage merkle_csr { hot @bram, warm @ddr, cold @nvme }` | Merkle-authenticated CSR DAG | Token lifecycle with cryptographic proof of every mutation |
+| Session cache | `kv` (via PolyKit) | ESLite key-value | Fast session lookup by `session_id` for auth middleware hot path |
+
+**Graph** (`identity_federation`): The CSR storage engine materializes the node/edge/overlay graph in compressed sparse row format. Hot data (active sessions, recent auth overlays) resides in `@bram` (block RAM), warm data (org configs, app registrations) migrates to `@ddr`, and cold data (historical sessions, expired federations) moves to `@nvme`. Overlay counters (`session_count`, `active_users`, `risk_score`) are `curate delta_curate` — atomically updated via delta operations and curated for ESLM consumption.
+
+**DAG** (`token_chain`): The merkle-CSR backend extends CSR with a per-mutation merkle root, enabling cryptographic proof of the entire token lifecycle. The `attest povc { witness threshold(2,3) }` block requires 2-of-3 lattice witnesses to attest each DAG mutation before it is considered final. This prevents a single compromised node from forging tokens or silently revoking them.
+
+**KV** (session cache): PolyKit's ESLite-backed KV store provides sub-millisecond `session_id → UserSessionNode` lookups for the auth middleware hot path. The KV cache is populated on `create_session` and invalidated on session expiry or revocation.
+
+### Cortex Visibility Policies
+
+Cortex enforces field-level privacy at the storage layer — before data reaches any circuit, query, or ESLM feed.
+
+| Node Type | `redact` Fields | `obfuscate` Fields | Effect |
+|-----------|----------------|--------------------|----|
+| `OrganizationNode` | — | `admin_id`, `billing_email` | Admin identity and billing info replaced with irreversible tokens in query results and ESLM feeds |
+| `ApplicationNode` | `client_secret_hash` | `owner_id` | Client secrets stripped entirely; owner identity tokenized |
+| `UserSessionNode` | `token_hash`, `device_fingerprint` | `user_id`, `ip_address` | Session credentials stripped; user and network identity tokenized |
+| `ServiceProviderNode` | — | `admin_contact` | SP admin contact tokenized |
+| `TokenNode` | `claims_encrypted`, `signature` | `subject_id`, `issuer_id` | Encrypted claims and PQ signatures stripped; subject/issuer tokenized |
+| `RevocationNode` | — | `revoker_id` | Revoker identity tokenized |
+
+**`redact`**: Field value is replaced with `null` in all non-circuit contexts (query results, ESLM feeds, console widgets, audit exports). The raw value exists only in storage and is accessible only by circuits running under the governing lex path.
+
+**`obfuscate`**: Field value is replaced with a deterministic, irreversible token (HKDF-derived from the value and a per-deployment secret). This preserves cardinality for ESLM analysis (e.g., "same obfuscated user across sessions") without exposing the actual identity.
+
+### Cortex Inference Triggers
+
+Every `data` node declares when Cortex inference runs:
+
+| Trigger | Node Types | What Happens |
+|---------|-----------|-------------|
+| `infer on_write` | `OrganizationNode`, `ApplicationNode`, `UserSessionNode`, `TokenNode`, `RevocationNode` | Every write (insert, update) passes through the ESLM risk-scoring pipeline. The ESLM evaluates the mutation against learned baselines (session creation rate, geo-velocity, device fingerprint drift, token issuance patterns) and produces an anomaly score. |
+| `infer on_read` | `ServiceProviderNode` | Reads trigger lightweight inference — the ESLM checks whether the SP metadata is stale or the federation trust relationship has drifted from baseline. |
+
+The `infer on_write` path is critical for auth events:
+
+```
+create_session() → graph_insert(identity_federation, session)
+                 → Cortex infer on_write triggers
+                 → ESLM evaluates: geo_velocity, device_drift, time_pattern, network_risk
+                 → Produces anomaly_score [0.0, 1.0]
+                 → If score > 0.90 (observe threshold): triggers on_anomaly
+```
+
+### Cortex Feedback Handlers
+
+| Handler | Trigger | Action |
+|---------|---------|--------|
+| `on_anomaly alert "oauth-team"` | Org mutations with anomaly score > threshold | Alert sent to `oauth-team` via StreamSight incident channel |
+| `on_anomaly alert "oauth-security"` | Session/token/app mutations with anomaly score > threshold | Alert sent to `oauth-security` — triggers incident response workflow |
+| `on_suggestion store "cortex/oauth/suspicious_sessions"` | Session mutations where ESLM produces a suggestion (moderate anomaly, not alert-worthy) | Suggestion stored in `cortex/oauth/suspicious_sessions` lex path for manual review |
+
+**Suspicious session flow**: When a session is created with a moderate anomaly score (e.g., 0.70–0.89), Cortex generates a `suggestion` rather than an `alert`. The suggestion is stored at `cortex/oauth/suspicious_sessions` where security operators can review it in the console. If confirmed as malicious, the operator triggers `revoke_token` which cascades through the DAG.
+
+**Geo-velocity anomaly flow**: When a user authenticates from a location that implies impossible travel (> 1000 km/hr since last auth), the `evaluate_risk` circuit feeds `auth_anomaly` with `geo_velocity:{session_id}`. Cortex `infer on_write` on the session node independently detects the anomaly. Both signals converge at the `observe` block threshold (0.90), triggering `on_anomaly alert "oauth-security"`.
+
+### Quantum State Snapshots (`.q`)
+
+Both the identity graph and token DAG expose `snapshot_*` circuits that produce `.q` quantum state snapshots — point-in-time merkle-authenticated captures of the entire construct state. These are used for:
+
+1. **Org migration**: When an enterprise migrates between Poly OAuth regions or tiers, `snapshot_org_quantum_state` captures the full org subgraph (apps, SPs, overlays) as a signed `.q` blob. The target region imports the snapshot and verifies the merkle proof + ML-DSA-87 signature.
+
+2. **Token chain audit**: `snapshot_token_chain_state` captures the DAG state (active/revoked token counts, merkle root, aggregate usage) for compliance audits. The POVC witness attestation on the DAG ensures the snapshot reflects the attested state, not a tampered view.
+
+3. **Disaster recovery**: `.q` snapshots are scatter-stored via the same `scatter-cas` k-of-n erasure coding used for session and token data. Recovery imports the latest attested snapshot and replays any mutations since the snapshot timestamp.
 
 ---
 

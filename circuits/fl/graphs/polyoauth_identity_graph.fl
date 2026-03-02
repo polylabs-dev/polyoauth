@@ -1,0 +1,665 @@
+/// Poly OAuth Identity Federation Graph
+/// Stratum graph storage + Cortex AI governance
+/// govern lex esn/global/org/polylabs/oauth
+
+import polykit_identity
+import polykit_metering
+import polykit_governance
+
+// ── Enums ────────────────────────────────────────────────────────
+
+type OrgTier = enum {
+    SelfService,
+    Business,
+    Enterprise,
+}
+
+type AuthMethod = enum {
+    SparkBiometric,
+    Fido2WebAuthn,
+    FederatedSaml,
+    FederatedOidc,
+    DeviceAuth,
+}
+
+type ProvisionMethod = enum {
+    Manual,
+    Scim,
+    Saml,
+    Api,
+}
+
+type SpProtocol = enum {
+    OAuth2,
+    Oidc,
+    Saml2,
+    Scim2,
+}
+
+// ── Data: Node types (Stratum store graph + Cortex) ──────────────
+
+data OrganizationNode : app v1 {
+    org_id: string,
+    name: string,
+    domain: string,
+    tier: u8,
+    admin_id: string,
+    billing_email: string,
+    saml_metadata_hash: string,
+    scim_endpoint_hash: string,
+    max_users: u32,
+    mfa_policy: u8,
+    created_at: u64,
+    updated_at: u64,
+}
+    store graph
+    govern lex esn/global/org/polylabs/oauth
+    cortex {
+        obfuscate [admin_id, billing_email]
+        infer on_write
+        on_anomaly alert "oauth-team"
+    }
+
+data ApplicationNode : app v1 {
+    app_id: string,
+    org_id: string,
+    name: string,
+    owner_id: string,
+    client_secret_hash: string,
+    redirect_uris_hash: string,
+    grant_types: u16,
+    client_type: u8,
+    allowed_scopes: string,
+    tags: string,
+    created_at: u64,
+}
+    store graph
+    govern lex esn/global/org/polylabs/oauth
+    cortex {
+        redact [client_secret_hash]
+        obfuscate [owner_id]
+        infer on_write
+        on_anomaly alert "oauth-security"
+    }
+
+data UserSessionNode : app v1 {
+    session_id: string,
+    user_id: string,
+    token_hash: string,
+    device_fingerprint: string,
+    ip_address: string,
+    geo_hash: string,
+    auth_method: u8,
+    risk_score_at_auth: u16,
+    step_up_count: u8,
+    created_at: u64,
+    expires_at: u64,
+}
+    store graph
+    govern lex esn/global/org/polylabs/oauth
+    cortex {
+        redact [token_hash, device_fingerprint]
+        obfuscate [user_id, ip_address]
+        infer on_write
+        on_anomaly alert "oauth-security"
+        on_suggestion store "cortex/oauth/suspicious_sessions"
+    }
+
+data ServiceProviderNode : app v1 {
+    sp_id: string,
+    org_id: string,
+    protocol: u8,
+    admin_contact: string,
+    metadata_hash: string,
+    assertion_consumer_url_hash: string,
+    name_id_format: u8,
+    created_at: u64,
+}
+    store graph
+    govern lex esn/global/org/polylabs/oauth
+    cortex {
+        obfuscate [admin_contact]
+        infer on_read
+    }
+
+// ── Edge types ──────────────────────────────────────────────────
+
+type AuthorizesEdge = struct {
+    edge_id: bytes(16),
+    scope: bytes(256),
+    granted_at: u64,
+    granted_by: bytes(16),
+    expires_at: u64,
+    conditional_policy_hash: bytes(32),
+}
+
+type BelongsToEdge = struct {
+    edge_id: bytes(16),
+    role: u8,
+    joined_at: u64,
+    provisioned_via: u8,
+}
+
+type SessionEdge = struct {
+    edge_id: bytes(16),
+    auth_timestamp_ns: u64,
+    device_id: bytes(16),
+    ip_hash: bytes(32),
+    user_agent_hash: bytes(32),
+}
+
+type FederatesWithEdge = struct {
+    edge_id: bytes(16),
+    trust_level: u8,
+    established_at: u64,
+    metadata_exchange_hash: bytes(32),
+}
+
+// ── Graph definition ────────────────────────────────────────────
+
+graph identity_federation {
+    node OrganizationNode
+    node ApplicationNode
+    node UserSessionNode
+    node ServiceProviderNode
+    edge AuthorizesEdge
+    edge BelongsToEdge
+    edge SessionEdge
+    edge FederatesWithEdge
+
+    overlay session_count: u64 curate delta_curate
+    overlay active_users: u64 curate delta_curate
+    overlay last_auth_ns: u64 curate delta_curate
+    overlay risk_score: u16 curate delta_curate
+    overlay app_count: u16 curate delta_curate
+    overlay sp_count: u16 curate delta_curate
+
+    storage csr {
+        hot @bram,
+        warm @ddr,
+        cold @nvme,
+    }
+
+    ai_feed auth_anomaly
+
+    observe identity_federation: [session_count, active_users, risk_score] threshold: {
+        anomaly_score 0.90
+        baseline_window 120
+    }
+}
+
+series identity_series: identity_federation
+    merkle_chain true
+    lattice_imprint true
+    witness_attest true
+
+// ── Circuits: Node insertion ────────────────────────────────────
+
+circuit create_org(
+    admin_pk: bytes(2592),
+    name: string,
+    domain: string,
+    tier: u8,
+    billing_email: string,
+    signing_sk: bytes(4896),
+) -> OrganizationNode
+    lex esn/global/org/polylabs/oauth
+    status production
+    precision C
+    povc true
+    constant_time true
+    observe metrics: [orgs_created, org_create_latency_ns]
+    monitor "org_creation_rate" { orgs_created < 10/s }
+    invariant "valid_tier" { tier >= 0 and tier <= 2 }
+    invariant "domain_present" { len(domain) > 0 }
+    meters [compute_cycles, memory_bytes]
+    wasm_abi [eslite_insert, now]
+    test golden "create_enterprise_org" {
+        let pk = bytes(2592, 0xAA)
+        let sk = bytes(4896, 0xBB)
+        let org = create_org(pk, "Acme Corp", "acme.com", 2, "billing@acme.com", sk)
+        assert len(org.org_id) > 0
+        assert org.tier == 2
+        assert org.domain == "acme.com"
+    }
+{
+    let admin_id = polykit_identity::derive_user_id(admin_pk)
+    let ts = now_ns() / 1000000
+    let org_seed = concat(admin_id, domain, csprng(16), ts)
+    let org_id = sha3_256(org_seed)
+
+    let org = OrganizationNode {
+        org_id: org_id,
+        name: name,
+        domain: domain,
+        tier: tier,
+        admin_id: admin_id,
+        billing_email: billing_email,
+        saml_metadata_hash: "",
+        scim_endpoint_hash: "",
+        max_users: if tier == 0 { 100 } else if tier == 1 { 1000 } else { 0xFFFFFFFF },
+        mfa_policy: 1,
+        created_at: ts,
+        updated_at: ts,
+    }
+
+    let payload = serialize(org)
+    let _sig = mldsa_sign(signing_sk, payload)
+    graph_insert(identity_federation, org)
+    overlay_set(identity_federation, org_id, session_count, 0)
+    overlay_set(identity_federation, org_id, active_users, 0)
+    overlay_set(identity_federation, org_id, app_count, 0)
+    overlay_set(identity_federation, org_id, sp_count, 0)
+
+    polykit_metering::record_usage(admin_id, "graph_org_create", DimensionValues {
+        executions: 1, hashes: 1, bandwidth: 0,
+        storage: 512, observables: 4, proofs: 1, circuits: 0, mpc_sessions: 0,
+    })
+
+    org
+}
+
+circuit register_app(
+    org_id: string,
+    name: string,
+    owner_id: string,
+    client_secret_hash: string,
+    redirect_uris_hash: string,
+    grant_types: u16,
+    client_type: u8,
+    allowed_scopes: string,
+    tags: string,
+    signing_sk: bytes(4896),
+) -> ApplicationNode
+    lex esn/global/org/polylabs/oauth
+    status production
+    precision C
+    povc true
+    observe metrics: [apps_registered, app_register_latency_ns]
+    invariant "org_exists" { graph_exists(identity_federation, org_id) }
+    invariant "name_present" { len(name) > 0 }
+    meters [compute_cycles, memory_bytes]
+    wasm_abi [eslite_insert, now]
+    test golden "register_oauth_app" {
+        let sk = bytes(4896, 0xBB)
+        let app = register_app("org-1", "My App", "user-1", "secret_hash", "uris_hash", 0x03, 0, "openid profile", "saas", sk)
+        assert len(app.app_id) > 0
+        assert app.org_id == "org-1"
+    }
+{
+    let ts = now_ns() / 1000000
+    let app_seed = concat(org_id, name, csprng(16), ts)
+    let app_id = sha3_256(app_seed)
+
+    let app = ApplicationNode {
+        app_id: app_id,
+        org_id: org_id,
+        name: name,
+        owner_id: owner_id,
+        client_secret_hash: client_secret_hash,
+        redirect_uris_hash: redirect_uris_hash,
+        grant_types: grant_types,
+        client_type: client_type,
+        allowed_scopes: allowed_scopes,
+        tags: tags,
+        created_at: ts,
+    }
+
+    let _sig = mldsa_sign(signing_sk, serialize(app))
+    graph_insert(identity_federation, app)
+
+    let belongs = BelongsToEdge {
+        edge_id: bit_slice(sha3_256(concat(app_id, org_id)), 0, 128),
+        role: 0,
+        joined_at: ts,
+        provisioned_via: 0,
+    }
+    graph_connect(identity_federation, app_id, org_id, belongs)
+
+    overlay_increment(identity_federation, org_id, app_count, 1)
+
+    app
+}
+
+circuit create_session(
+    user_id: string,
+    device_fingerprint: string,
+    ip_address: string,
+    geo_hash: string,
+    auth_method: u8,
+    risk_score: u16,
+    app_id: string,
+    signing_sk: bytes(4896),
+) -> UserSessionNode
+    lex esn/global/org/polylabs/oauth
+    status production
+    precision C
+    povc true
+    constant_time true
+    observe metrics: [sessions_created, session_create_latency_ns]
+    monitor "session_creation_spike" { sessions_created < 100/s }
+    invariant "score_bounded" { risk_score <= 1000 }
+    meters [compute_cycles, memory_bytes]
+    wasm_abi [eslite_insert, now]
+    test golden "create_low_risk_session" {
+        let sk = bytes(4896, 0xBB)
+        let sess = create_session("user-1", "fp-hash", "10.0.0.1", "9q8yyk8", 0, 50, "app-1", sk)
+        assert len(sess.session_id) > 0
+        assert sess.risk_score_at_auth == 50
+    }
+{
+    let ts = now_ns() / 1000000
+    let session_seed = concat(user_id, device_fingerprint, csprng(16), ts)
+    let session_id = sha3_256(session_seed)
+    let token_hash = sha3_256(concat(session_id, csprng(32)))
+
+    let session = UserSessionNode {
+        session_id: session_id,
+        user_id: user_id,
+        token_hash: token_hash,
+        device_fingerprint: device_fingerprint,
+        ip_address: ip_address,
+        geo_hash: geo_hash,
+        auth_method: auth_method,
+        risk_score_at_auth: risk_score,
+        step_up_count: 0,
+        created_at: ts,
+        expires_at: ts + 86400000,
+    }
+
+    let _sig = mldsa_sign(signing_sk, serialize(session))
+    graph_insert(identity_federation, session)
+
+    let session_edge = SessionEdge {
+        edge_id: bit_slice(sha3_256(concat(session_id, app_id)), 0, 128),
+        auth_timestamp_ns: ts * 1000000,
+        device_id: bit_slice(sha3_256(device_fingerprint), 0, 128),
+        ip_hash: sha3_256(ip_address),
+        user_agent_hash: zero(32),
+    }
+    graph_connect(identity_federation, session_id, app_id, session_edge)
+
+    let org_id = graph_traverse(identity_federation, app_id, BelongsToEdge).org_id
+    overlay_increment(identity_federation, org_id, session_count, 1)
+    overlay_increment(identity_federation, org_id, active_users, 1)
+    overlay_set(identity_federation, org_id, last_auth_ns, ts * 1000000)
+    overlay_set(identity_federation, session_id, risk_score, risk_score)
+
+    eslm_feed(auth_anomaly, serialize(session), risk_score)
+
+    polykit_metering::record_usage(user_id, "graph_session_create", DimensionValues {
+        executions: 1, hashes: 3, bandwidth: 0,
+        storage: 512, observables: 4, proofs: 1, circuits: 0, mpc_sessions: 0,
+    })
+
+    session
+}
+
+circuit register_sp(
+    org_id: string,
+    protocol: u8,
+    admin_contact: string,
+    metadata_hash: string,
+    acs_url_hash: string,
+    name_id_format: u8,
+    signing_sk: bytes(4896),
+) -> ServiceProviderNode
+    lex esn/global/org/polylabs/oauth
+    status production
+    precision C
+    povc true
+    observe metrics: [sps_registered, sp_register_latency_ns]
+    invariant "org_exists" { graph_exists(identity_federation, org_id) }
+    invariant "valid_protocol" { protocol <= 3 }
+    meters [compute_cycles, memory_bytes]
+    wasm_abi [eslite_insert, now]
+{
+    let ts = now_ns() / 1000000
+    let sp_seed = concat(org_id, metadata_hash, csprng(16), ts)
+    let sp_id = sha3_256(sp_seed)
+
+    let sp = ServiceProviderNode {
+        sp_id: sp_id,
+        org_id: org_id,
+        protocol: protocol,
+        admin_contact: admin_contact,
+        metadata_hash: metadata_hash,
+        assertion_consumer_url_hash: acs_url_hash,
+        name_id_format: name_id_format,
+        created_at: ts,
+    }
+
+    let _sig = mldsa_sign(signing_sk, serialize(sp))
+    graph_insert(identity_federation, sp)
+
+    let belongs = BelongsToEdge {
+        edge_id: bit_slice(sha3_256(concat(sp_id, org_id)), 0, 128),
+        role: 0,
+        joined_at: ts,
+        provisioned_via: 0,
+    }
+    graph_connect(identity_federation, sp_id, org_id, belongs)
+
+    overlay_increment(identity_federation, org_id, sp_count, 1)
+
+    sp
+}
+
+// ── Circuits: Authorization & Federation ────────────────────────
+
+circuit authorize_app(
+    user_id: string,
+    app_id: string,
+    scope: string,
+    policy_hash: string,
+    expires_at: u64,
+    signing_sk: bytes(4896),
+) -> AuthorizesEdge
+    lex esn/global/org/polylabs/oauth
+    status production
+    precision C
+    povc true
+    observe metrics: [authorizations_granted, authorization_latency_ns]
+    invariant "app_exists" { graph_exists(identity_federation, app_id) }
+    invariant "expiry_future" { expires_at > now_ns() / 1000000 }
+    meters [compute_cycles, memory_bytes]
+    wasm_abi [now]
+{
+    let ts = now_ns() / 1000000
+
+    let app = graph_query(identity_federation, app_id)
+    let allowed = app.allowed_scopes
+    // scope subset validation delegated to RBAC policy circuit
+
+    let auth_edge = AuthorizesEdge {
+        edge_id: bit_slice(sha3_256(concat(user_id, app_id, ts)), 0, 128),
+        scope: scope,
+        granted_at: ts,
+        granted_by: user_id,
+        expires_at: expires_at,
+        conditional_policy_hash: policy_hash,
+    }
+
+    let _sig = mldsa_sign(signing_sk, serialize(auth_edge))
+    graph_connect(identity_federation, user_id, app_id, auth_edge)
+
+    auth_edge
+}
+
+circuit establish_federation(
+    org_a_id: string,
+    sp_id: string,
+    trust_level: u8,
+    metadata_exchange_hash: string,
+    signing_sk: bytes(4896),
+) -> FederatesWithEdge
+    lex esn/global/org/polylabs/oauth
+    status production
+    precision C
+    povc true
+    observe metrics: [federations_established]
+    invariant "org_exists" { graph_exists(identity_federation, org_a_id) }
+    invariant "sp_exists" { graph_exists(identity_federation, sp_id) }
+    meters [compute_cycles, memory_bytes]
+    wasm_abi [now]
+{
+    let ts = now_ns() / 1000000
+
+    let fed_edge = FederatesWithEdge {
+        edge_id: bit_slice(sha3_256(concat(org_a_id, sp_id, ts)), 0, 128),
+        trust_level: trust_level,
+        established_at: ts,
+        metadata_exchange_hash: metadata_exchange_hash,
+    }
+
+    let _sig = mldsa_sign(signing_sk, serialize(fed_edge))
+    graph_connect(identity_federation, org_a_id, sp_id, fed_edge)
+
+    fed_edge
+}
+
+// ── Circuits: Risk Evaluation ───────────────────────────────────
+
+circuit evaluate_risk(
+    session_id: string,
+    geo_velocity_km_per_hr: u32,
+    device_drift_score: u16,
+    network_risk_flags: u16,
+    new_risk_score: u16,
+) -> u16
+    lex esn/global/org/polylabs/oauth
+    status production
+    precision B
+    povc true
+    observe metrics: [risk_evaluations, high_risk_sessions, geo_velocity_alerts]
+    monitor "high_risk_rate" { high_risk_sessions / risk_evaluations < 0.05 }
+    invariant "score_bounded" { new_risk_score <= 1000 }
+    test golden "flag_impossible_travel" {
+        let score = evaluate_risk("sess-1", 2000, 0, 0, 900)
+        assert score == 900
+    }
+{
+    let session = graph_query(identity_federation, session_id)
+    let org_id = graph_traverse_up(identity_federation, session_id, BelongsToEdge).org_id
+
+    overlay_set(identity_federation, session_id, risk_score, new_risk_score)
+
+    if geo_velocity_km_per_hr > 1000 {
+        eslm_feed(auth_anomaly, concat("geo_velocity:", session_id), new_risk_score)
+    }
+
+    if device_drift_score > 500 {
+        eslm_feed(auth_anomaly, concat("device_drift:", session_id), device_drift_score)
+    }
+
+    if new_risk_score > 800 {
+        overlay_decrement(identity_federation, org_id, active_users, 1)
+        eslm_feed(auth_anomaly, concat("high_risk:", session_id), new_risk_score)
+    }
+
+    new_risk_score
+}
+
+// ── Circuits: Query ─────────────────────────────────────────────
+
+circuit get_org(
+    graph_id: bytes(32),
+    org_id: string,
+) -> option<OrganizationNode>
+    lex esn/global/org/polylabs/oauth
+    status production
+    precision B
+    observe metrics: [org_id]
+{
+    none
+}
+
+circuit get_sessions_for_user(
+    graph_id: bytes(32),
+    user_id: string,
+) -> list<UserSessionNode>
+    lex esn/global/org/polylabs/oauth
+    status production
+    precision B
+    observe metrics: [user_id, session_count]
+    test golden "empty_graph_returns_no_sessions" {
+        let sessions = get_sessions_for_user(bytes(32, 0x01), "NONEXIST")
+        assert sessions == []
+    }
+{
+    []
+}
+
+circuit get_apps_for_org(
+    graph_id: bytes(32),
+    org_id: string,
+) -> list<ApplicationNode>
+    lex esn/global/org/polylabs/oauth
+    status production
+    precision B
+    observe metrics: [org_id, app_count]
+{
+    []
+}
+
+circuit get_sps_for_org(
+    graph_id: bytes(32),
+    org_id: string,
+) -> list<ServiceProviderNode>
+    lex esn/global/org/polylabs/oauth
+    status production
+    precision B
+    observe metrics: [org_id, sp_count]
+{
+    []
+}
+
+// ── Circuits: Quantum State Snapshot ────────────────────────────
+
+circuit snapshot_org_quantum_state(
+    org_id: string,
+    signing_sk: bytes(4896),
+) -> string
+    lex esn/global/org/polylabs/oauth
+    status production
+    precision C
+    povc true
+    observe metrics: [snapshots_created, snapshot_size_bytes]
+{
+    let org = graph_query(identity_federation, org_id)
+    let apps = graph_traverse(identity_federation, org_id, BelongsToEdge)
+    let sps = graph_traverse(identity_federation, org_id, FederatesWithEdge)
+
+    let session_count = overlay_get(identity_federation, org_id, session_count)
+    let active_users = overlay_get(identity_federation, org_id, active_users)
+    let risk_avg = overlay_get(identity_federation, org_id, risk_score)
+
+    let snapshot_payload = serialize({
+        org: org,
+        app_count: len(apps),
+        sp_count: len(sps),
+        session_count: session_count,
+        active_users: active_users,
+        risk_average: risk_avg,
+        timestamp: now_ns() / 1000000,
+    })
+
+    let snapshot_hash = sha3_256(snapshot_payload)
+    let _sig = mldsa_sign(signing_sk, snapshot_payload)
+
+    snapshot_hash
+}
+
+// ── Streams ─────────────────────────────────────────────────────
+
+stream identity_graph_mutations: event<OrganizationNode>
+    retention 7y
+    consumers [governance, audit, streamsight, oauth_team]
+
+stream session_events: event<UserSessionNode>
+    retention 365d
+    consumers [streamsight, console, oauth_security]
+
+stream risk_events: event<UserSessionNode>
+    retention 365d
+    consumers [streamsight, eslm, oauth_security]

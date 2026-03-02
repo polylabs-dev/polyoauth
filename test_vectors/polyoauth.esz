@@ -1,0 +1,169 @@
+# Poly OAuth — ESCX Test Vectors
+# Validates authentication, token grants, biometric verification,
+# federation, risk assessment, session management, and telemetry isolation
+
+circuit_id: esn.polylabs.polyoauth
+test_name: polyoauth_core
+vector_count: 7
+
+vectors:
+  - name: "happy path — SPARK biometric authentication and session creation"
+    category: happy_path
+    inputs:
+      operation: "authenticate"
+      client_id: "app-001"
+      spark_identity: "spark-polyoauth-v1:alice-prime-id"
+      biometric:
+        method: "face_id"
+        confidence: 0.97
+        liveness_score: 0.99
+        attested: true
+      scope: ["profile", "email"]
+      redirect_uri: "https://app.example.com/callback"
+    expected_outputs:
+      status: "authenticated"
+      auth_code_issued: true
+      auth_code_length: 64
+      session_created: true
+      session_ttl_s: 3600
+      auth_attempts_counter: 1
+      biometric_verifications_counter: 1
+      session_creates_counter: 1
+    pass_criteria:
+      biometric_verified: true
+      session_bound_to_spark: true
+      auth_code_single_use: true
+      counters_incremented: true
+
+  - name: "happy path — exchange auth code for token grant"
+    category: happy_path
+    inputs:
+      operation: "grant_token"
+      auth_code: "valid-auth-code-64chars"
+      client_id: "app-001"
+      client_secret_encrypted: "ML-KEM-1024:0xaabbccdd..."
+      grant_type: "authorization_code"
+    expected_outputs:
+      status: "granted"
+      access_token_issued: true
+      refresh_token_issued: true
+      token_type: "Bearer"
+      expires_in: 3600
+      token_signed_with: "ML-DSA-87"
+      token_grants_counter: 1
+    pass_criteria:
+      tokens_pq_signed: true
+      auth_code_consumed: true
+      refresh_token_rotatable: true
+
+  - name: "edge case — concurrent session limit exceeded"
+    category: edge_case
+    inputs:
+      operation: "create_session"
+      spark_identity: "spark-polyoauth-v1:bob-prime-id"
+      existing_sessions: 5
+      max_concurrent_sessions: 5
+      biometric:
+        method: "fingerprint"
+        confidence: 0.95
+        attested: true
+    expected_outputs:
+      status: "rejected"
+      error_code: "E_SESSION_LIMIT"
+      oldest_session_hint: "session-001"
+      session_creates_counter: 0
+    pass_criteria:
+      session_limit_enforced: true
+      no_session_created: true
+      hint_provided_for_eviction: true
+
+  - name: "crypto — ML-DSA-87 token signature verification"
+    category: crypto
+    inputs:
+      operation: "grant_token"
+      auth_code: "valid-auth-code-for-crypto-test"
+      client_id: "app-002"
+      client_secret_encrypted: "ML-KEM-1024:0x11223344..."
+      grant_type: "authorization_code"
+      verify_signature: true
+    expected_outputs:
+      token_algorithm: "ML-DSA-87"
+      signature_valid: true
+      signature_length: 4627
+      public_key_length: 1952
+      token_grants_counter: 1
+    pass_criteria:
+      pq_signature_algorithm: true
+      signature_verifiable: true
+      nist_level_5: true
+
+  - name: "federation — cross-IdP identity bridging with attestation"
+    category: crypto
+    inputs:
+      operation: "federate_identity"
+      source_idp: "enterprise-okta"
+      target_idp: "polylabs-spark"
+      saml_assertion_hash: "sha3-256:e4f5a6b7c8d9..."
+      spark_identity: "spark-polyoauth-v1:carol-prime-id"
+      federation_witness: { attested: true, witness_count: 3 }
+    expected_outputs:
+      status: "federated"
+      bridge_token_issued: true
+      attestation_anchored: true
+      federation_requests_counter: 1
+    pass_criteria:
+      cross_idp_link_established: true
+      attestation_witness_verified: true
+      no_plaintext_saml_stored: true
+
+  - name: "blind telemetry isolation — polyoauth metrics scoped to own lex namespace"
+    category: telemetry_isolation
+    inputs:
+      operation: "authenticate"
+      client_id: "app-isolation"
+      spark_identity: "spark-polyoauth-v1:dave-prime-id"
+      biometric:
+        method: "fingerprint"
+        confidence: 0.98
+        attested: true
+      telemetry_context:
+        lex_namespace: "esn/polylabs/polyoauth"
+        hkdf_context: "poly-oauth-v1"
+    expected_outputs:
+      telemetry_emitted: true
+      telemetry_namespace: "esn/polylabs/polyoauth"
+      cross_product_leakage: false
+      metrics_visible_to_polypass: false
+      metrics_visible_to_polymessenger: false
+      metrics_visible_to_polywallet: false
+      hkdf_context_isolated: true
+    pass_criteria:
+      lex_namespace_scoped: true
+      no_cross_product_fanup: true
+      hkdf_derivation_independent: true
+      blind_to_sibling_products: true
+
+  - name: "error handling — risk assessment blocks suspicious auth attempt"
+    category: error_handling
+    inputs:
+      operation: "assess_risk"
+      spark_identity: "spark-polyoauth-v1:eve-prime-id"
+      auth_context:
+        ip_geo: "anomalous"
+        device_fingerprint: "unknown"
+        velocity: 15
+        velocity_window_s: 60
+        previous_failures: 4
+      risk_threshold: 0.7
+    expected_outputs:
+      risk_score: 0.92
+      action: "block"
+      reason: "velocity_exceeded"
+      mfa_challenge_issued: false
+      auth_attempts_counter: 0
+      risk_assessments_counter: 1
+    pass_criteria:
+      high_risk_blocked: true
+      risk_score_above_threshold: true
+      no_auth_granted: true
+      audit_trail_written: true

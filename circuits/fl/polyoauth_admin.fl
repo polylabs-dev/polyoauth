@@ -1,0 +1,273 @@
+// Poly OAuth Admin -- Organization and application management
+//
+// Lex Architecture:
+//   esn/global/org/polylabs/oauth/admin
+//   Org registration, app registration, conditional access policies,
+//   SCIM 2.0 provisioning lifecycle. All mutations are ML-DSA-87 signed.
+
+import polykit_identity
+import polykit_metering
+import polykit_governance
+
+type OrgConfig = struct {
+    org_id: bytes(16),
+    name: bytes(256),
+    domain: bytes(256),
+    tier: u8,
+    saml_metadata_hash: bytes(32),
+    scim_endpoint_hash: bytes(32),
+    max_users: u32,
+    max_apps: u16,
+    mfa_required: bool,
+    min_auth_strength: u8,
+    created_at: u64,
+    updated_at: u64,
+}
+
+type AppRegistration = struct {
+    app_id: bytes(16),
+    org_id: bytes(16),
+    name: bytes(256),
+    redirect_uris_hash: bytes(32),
+    grant_types: u16,
+    client_type: u8,
+    tags: bytes(128),
+    token_ttl_access_ms: u64,
+    token_ttl_refresh_ms: u64,
+    created_at: u64,
+}
+
+type ConditionalAccessPolicy = struct {
+    policy_id: bytes(16),
+    org_id: bytes(16),
+    name: bytes(256),
+    app_tags_filter: bytes(128),
+    required_auth_method: u8,
+    required_device_compliance: u8,
+    max_risk_score: u16,
+    allowed_networks_hash: bytes(32),
+    action_on_violation: u8,
+    priority: u16,
+    enabled: bool,
+    created_at: u64,
+}
+
+type ScimMapping = struct {
+    mapping_id: bytes(16),
+    org_id: bytes(16),
+    external_user_id: bytes(64),
+    internal_user_id: bytes(16),
+    status: u8,
+    provisioned_at: u64,
+    last_synced_at: u64,
+    deprovisioned_at: u64,
+}
+
+// --- Register a new organization ---
+circuit register_org(admin_id: bytes(16), name: bytes(256), domain: bytes(256), tier: u8, signing_sk: bytes(4896)) -> OrgConfig
+    profile poly_framework_sensitive
+    lex esn/global/org/polylabs/oauth/admin
+    constant_time true
+    observe metrics: [orgs_registered, org_registration_latency_ns]
+    monitor "org_registration_rate" { orgs_registered < 10/s }
+    invariant "valid_tier" { tier >= 1 and tier <= 3 }
+    invariant "domain_present" { len(domain) > 0 }
+    meters [compute_cycles, memory_bytes]
+    wasm_abi [eslite_insert, now]
+    test golden "register_org_basic" {
+        let sk = bytes(4896, 0xBB)
+        let aid = bytes(16, 0x01)
+        let org = register_org(aid, "Acme Corp", "acme.com", 2, sk)
+        assert len(org.org_id) == 16
+        assert org.tier == 2
+        assert org.max_users == 1000
+    }
+{
+    let ts = now_ns() / 1000000
+    let org_seed = concat(admin_id, domain, csprng(16), ts)
+    let org_id = bit_slice(sha3_256(org_seed), 0, 128)
+
+    let (max_users, max_apps) = match tier {
+        1 => (100, 10),
+        2 => (1000, 50),
+        3 => (4294967295, 65535),
+    }
+
+    let org = OrgConfig {
+        org_id: org_id,
+        name: name,
+        domain: domain,
+        tier: tier,
+        saml_metadata_hash: zero(32),
+        scim_endpoint_hash: zero(32),
+        max_users: max_users,
+        max_apps: max_apps,
+        mfa_required: tier >= 2,
+        min_auth_strength: if tier >= 3 { 90 } else { 50 },
+        created_at: ts,
+        updated_at: ts,
+    }
+
+    let payload = serialize(org)
+    let _sig = mldsa_sign(signing_sk, payload)
+    eslite_insert(org_id, org)
+
+    polykit_metering::record_usage(admin_id, "org_register", DimensionValues {
+        executions: 1, hashes: 1, bandwidth: 0,
+        storage: 512, observables: 1, proofs: 1, circuits: 0, mpc_sessions: 0,
+    })
+
+    org
+}
+
+// --- Register an application within an organization ---
+circuit register_app(org_id: bytes(16), name: bytes(256), redirect_uris_hash: bytes(32), grant_types: u16, client_type: u8, tags: bytes(128), signing_sk: bytes(4896)) -> AppRegistration
+    profile poly_framework_sensitive
+    lex esn/global/org/polylabs/oauth/admin
+    observe metrics: [apps_registered, app_registration_latency_ns]
+    invariant "org_exists" { eslite_exists(org_id) }
+    meters [compute_cycles, memory_bytes]
+    wasm_abi [eslite_insert, eslite_query, now]
+{
+    let org = eslite_query(org_id)
+    let app_count = count_apps(org_id)
+    if app_count >= org.max_apps { abort "app_limit_exceeded" }
+
+    let ts = now_ns() / 1000000
+    let app_seed = concat(org_id, name, csprng(16), ts)
+    let app_id = bit_slice(sha3_256(app_seed), 0, 128)
+
+    let app = AppRegistration {
+        app_id: app_id,
+        org_id: org_id,
+        name: name,
+        redirect_uris_hash: redirect_uris_hash,
+        grant_types: grant_types,
+        client_type: client_type,
+        tags: tags,
+        token_ttl_access_ms: 3600000,
+        token_ttl_refresh_ms: 86400000,
+        created_at: ts,
+    }
+
+    let _sig = mldsa_sign(signing_sk, serialize(app))
+    eslite_insert(app_id, app)
+    app
+}
+
+// --- Update conditional access policy ---
+circuit update_policy(policy: ConditionalAccessPolicy, signing_sk: bytes(4896)) -> ConditionalAccessPolicy
+    profile poly_framework_sensitive
+    lex esn/global/org/polylabs/oauth/admin
+    observe metrics: [policies_updated]
+    invariant "org_exists" { eslite_exists(policy.org_id) }
+    invariant "valid_risk_threshold" { policy.max_risk_score <= 1000 }
+    meters [compute_cycles, memory_bytes]
+    wasm_abi [eslite_insert]
+{
+    let _sig = mldsa_sign(signing_sk, serialize(policy))
+    eslite_insert(policy.policy_id, policy)
+    policy
+}
+
+// --- Create a conditional access policy ---
+circuit create_conditional_access(org_id: bytes(16), name: bytes(256), app_tags: bytes(128), required_method: u8, max_risk: u16, action: u8, priority: u16, signing_sk: bytes(4896)) -> ConditionalAccessPolicy
+    profile poly_framework_sensitive
+    lex esn/global/org/polylabs/oauth/admin
+    observe metrics: [policies_created, policy_creation_latency_ns]
+    invariant "org_exists" { eslite_exists(org_id) }
+    invariant "valid_priority" { priority > 0 }
+    meters [compute_cycles, memory_bytes]
+    wasm_abi [eslite_insert, now]
+{
+    let ts = now_ns() / 1000000
+    let policy_seed = concat(org_id, name, csprng(16), ts)
+    let policy_id = bit_slice(sha3_256(policy_seed), 0, 128)
+
+    let policy = ConditionalAccessPolicy {
+        policy_id: policy_id,
+        org_id: org_id,
+        name: name,
+        app_tags_filter: app_tags,
+        required_auth_method: required_method,
+        required_device_compliance: 1,
+        max_risk_score: max_risk,
+        allowed_networks_hash: zero(32),
+        action_on_violation: action,
+        priority: priority,
+        enabled: true,
+        created_at: ts,
+    }
+
+    let _sig = mldsa_sign(signing_sk, serialize(policy))
+    eslite_insert(policy_id, policy)
+
+    polykit_metering::record_usage(org_id, "policy_create", DimensionValues {
+        executions: 1, hashes: 1, bandwidth: 0,
+        storage: 256, observables: 1, proofs: 0, circuits: 0, mpc_sessions: 0,
+    })
+
+    policy
+}
+
+// --- Provision a user via SCIM 2.0 ---
+circuit provision_user(org_id: bytes(16), external_user_id: bytes(64), user_pk: bytes(2592), signing_sk: bytes(4896)) -> ScimMapping
+    profile poly_framework_sensitive
+    lex esn/global/org/polylabs/oauth/admin
+    observe metrics: [users_provisioned, scim_provision_latency_ns]
+    invariant "org_exists" { eslite_exists(org_id) }
+    meters [compute_cycles, memory_bytes]
+    wasm_abi [eslite_insert, now]
+{
+    let ts = now_ns() / 1000000
+    let internal_user_id = polykit_identity::derive_user_id(user_pk)
+    let mapping_seed = concat(org_id, external_user_id, ts)
+    let mapping_id = bit_slice(sha3_256(mapping_seed), 0, 128)
+
+    let mapping = ScimMapping {
+        mapping_id: mapping_id,
+        org_id: org_id,
+        external_user_id: external_user_id,
+        internal_user_id: internal_user_id,
+        status: 1,
+        provisioned_at: ts,
+        last_synced_at: ts,
+        deprovisioned_at: 0,
+    }
+
+    let _sig = mldsa_sign(signing_sk, serialize(mapping))
+    eslite_insert(mapping_id, mapping)
+    mapping
+}
+
+// --- Deprovision a user, revoking all sessions ---
+circuit deprovision_user(mapping: ScimMapping, signing_sk: bytes(4896)) -> ScimMapping
+    profile poly_framework_sensitive
+    lex esn/global/org/polylabs/oauth/admin
+    observe metrics: [users_deprovisioned, scim_deprovision_latency_ns]
+    invariant "user_active" { mapping.status == 1 }
+    meters [compute_cycles, memory_bytes]
+    wasm_abi [eslite_insert, now]
+{
+    let ts = now_ns() / 1000000
+
+    revoke_all_sessions(mapping.internal_user_id)
+    revoke_all_tokens(mapping.internal_user_id)
+
+    let updated = ScimMapping {
+        ..mapping,
+        status: 0,
+        last_synced_at: ts,
+        deprovisioned_at: ts,
+    }
+
+    let _sig = mldsa_sign(signing_sk, serialize(updated))
+    eslite_insert(mapping.mapping_id, updated)
+
+    polykit_metering::record_usage(mapping.org_id, "user_deprovision", DimensionValues {
+        executions: 1, hashes: 0, bandwidth: 0,
+        storage: 0, observables: 2, proofs: 0, circuits: 0, mpc_sessions: 0,
+    })
+
+    updated
+}

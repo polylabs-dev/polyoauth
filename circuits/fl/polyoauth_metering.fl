@@ -1,0 +1,219 @@
+// Poly OAuth Metering -- OAuth operation metering with 8D dimensions
+//
+// Lex Architecture:
+//   esn/global/org/polylabs/oauth/metering
+//   Maps: auth [E,O], token [E,O], session [O,S], risk [E,C]
+//   Isolated metering under polylabs.oauth.metering lex namespace.
+//   Billing uses blinded payment tokens -- no cross-product correlation.
+
+import polykit_metering
+
+type OAuthMeteringRecord = struct {
+    user_id: bytes(16),
+    org_id: bytes(16),
+    operation: string,
+    dimensions: DimensionValues,
+    timestamp_ms: u64,
+}
+
+type OrgUsageSummary = struct {
+    org_id: bytes(16),
+    auth_executions: u64,
+    token_executions: u64,
+    session_observables: u64,
+    session_storage: u64,
+    risk_executions: u64,
+    risk_circuits: u64,
+    period_start_ms: u64,
+    period_end_ms: u64,
+}
+
+type UserQuotaStatus = struct {
+    user_id: bytes(16),
+    current_usage: DimensionValues,
+    tier_limits: TierLimits,
+    violations: [MeteringDimension; 8],
+    quota_remaining_pct: u8,
+}
+
+stream oauth_metering_events: event<OAuthMeteringRecord>
+    | throttle 2000/s burst 4000
+
+// --- Meter an authentication operation [E,O] ---
+circuit meter_auth(user_id: bytes(16), org_id: bytes(16), auth_type: string) -> OAuthMeteringRecord
+    profile poly_framework_standard
+    lex esn/global/org/polylabs/oauth/metering
+    observe metrics: [auth_metered, auth_meter_latency_ns]
+    meters [compute_cycles, memory_bytes]
+    wasm_abi [eslite_insert, stream_emit, now]
+    test golden "meter_auth_basic" {
+        let uid = bytes(16, 0x01)
+        let oid = bytes(16, 0x02)
+        let record = meter_auth(uid, oid, "spark_biometric")
+        assert record.operation == "spark_biometric"
+    }
+{
+    let ts = now_ns() / 1000000
+    let dims = DimensionValues {
+        executions: 1,
+        hashes: 3,
+        bandwidth: 0,
+        storage: 0,
+        observables: 1,
+        proofs: 1,
+        circuits: 0,
+        mpc_sessions: 0,
+    }
+
+    polykit_metering::record_usage(user_id, auth_type, dims)
+
+    let record = OAuthMeteringRecord {
+        user_id: user_id,
+        org_id: org_id,
+        operation: auth_type,
+        dimensions: dims,
+        timestamp_ms: ts,
+    }
+
+    emit(oauth_metering_events, record)
+    record
+}
+
+// --- Meter a token operation [E,O] ---
+circuit meter_token(user_id: bytes(16), org_id: bytes(16), token_op: string) -> OAuthMeteringRecord
+    profile poly_framework_standard
+    lex esn/global/org/polylabs/oauth/metering
+    observe metrics: [token_metered, token_meter_latency_ns]
+    meters [compute_cycles, memory_bytes]
+    wasm_abi [eslite_insert, stream_emit, now]
+{
+    let ts = now_ns() / 1000000
+
+    let (exec_count, hash_count) = match token_op {
+        "issue" => (1, 2),
+        "refresh" => (2, 3),
+        "revoke" => (1, 1),
+        "verify" => (1, 1),
+        _ => (1, 1),
+    }
+
+    let dims = DimensionValues {
+        executions: exec_count,
+        hashes: hash_count,
+        bandwidth: 0,
+        storage: 0,
+        observables: 1,
+        proofs: if token_op == "issue" { 1 } else { 0 },
+        circuits: 0,
+        mpc_sessions: 0,
+    }
+
+    polykit_metering::record_usage(user_id, token_op, dims)
+
+    let record = OAuthMeteringRecord {
+        user_id: user_id,
+        org_id: org_id,
+        operation: token_op,
+        dimensions: dims,
+        timestamp_ms: ts,
+    }
+
+    emit(oauth_metering_events, record)
+    record
+}
+
+// --- Meter a session operation [O,S] ---
+circuit meter_session(user_id: bytes(16), org_id: bytes(16), session_op: string) -> OAuthMeteringRecord
+    profile poly_framework_standard
+    lex esn/global/org/polylabs/oauth/metering
+    observe metrics: [session_metered]
+    meters [compute_cycles, memory_bytes]
+    wasm_abi [eslite_insert, stream_emit, now]
+{
+    let ts = now_ns() / 1000000
+
+    let storage_bytes = match session_op {
+        "create" => 512,
+        "refresh" => 128,
+        "revoke" => 64,
+        _ => 0,
+    }
+
+    let dims = DimensionValues {
+        executions: 0,
+        hashes: 0,
+        bandwidth: 0,
+        storage: storage_bytes,
+        observables: 1,
+        proofs: 0,
+        circuits: 0,
+        mpc_sessions: 0,
+    }
+
+    polykit_metering::record_usage(user_id, session_op, dims)
+
+    let record = OAuthMeteringRecord {
+        user_id: user_id,
+        org_id: org_id,
+        operation: session_op,
+        dimensions: dims,
+        timestamp_ms: ts,
+    }
+
+    emit(oauth_metering_events, record)
+    record
+}
+
+// --- Check user quota against tier limits ---
+circuit check_user_quota(user_id: bytes(16), tier: TierLimits) -> UserQuotaStatus
+    profile poly_framework_standard
+    lex esn/global/org/polylabs/oauth/metering
+    observe metrics: [quota_checks, quota_violations]
+    monitor "quota_violation_rate" { quota_violations / quota_checks < 0.1 }
+{
+    let current = polykit_metering::get_usage_summary(user_id)
+    let violations = polykit_metering::check_limits(current, tier)
+
+    let max_pct = parallel for i in 0..8 {
+        if tier.limits[i] > 0 { current[i] * 100 / tier.limits[i] } else { 0 }
+    }
+    let highest_pct = max(max_pct)
+    let remaining = if highest_pct >= 100 { 0 } else { 100 - highest_pct }
+
+    UserQuotaStatus {
+        user_id: user_id,
+        current_usage: current,
+        tier_limits: tier,
+        violations: violations,
+        quota_remaining_pct: remaining,
+    }
+}
+
+// --- Get aggregated usage for an entire organization ---
+circuit get_org_usage(org_id: bytes(16), period_start: u64, period_end: u64) -> OrgUsageSummary
+    profile poly_framework_standard
+    lex esn/global/org/polylabs/oauth/metering
+    observe metrics: [org_usage_queries]
+    wasm_abi [eslite_query]
+{
+    let records = eslite_query_range(org_id, period_start, period_end)
+
+    let auth_exec = sum(records, |r| if starts_with(r.operation, "auth") { r.dimensions.executions } else { 0 })
+    let token_exec = sum(records, |r| if starts_with(r.operation, "token") { r.dimensions.executions } else { 0 })
+    let session_obs = sum(records, |r| if starts_with(r.operation, "session") { r.dimensions.observables } else { 0 })
+    let session_stor = sum(records, |r| r.dimensions.storage)
+    let risk_exec = sum(records, |r| if starts_with(r.operation, "risk") { r.dimensions.executions } else { 0 })
+    let risk_circ = sum(records, |r| if starts_with(r.operation, "risk") { r.dimensions.circuits } else { 0 })
+
+    OrgUsageSummary {
+        org_id: org_id,
+        auth_executions: auth_exec,
+        token_executions: token_exec,
+        session_observables: session_obs,
+        session_storage: session_stor,
+        risk_executions: risk_exec,
+        risk_circuits: risk_circ,
+        period_start_ms: period_start,
+        period_end_ms: period_end,
+    }
+}

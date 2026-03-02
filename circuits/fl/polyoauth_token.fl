@@ -1,0 +1,245 @@
+// Poly OAuth Token — PQ-JWT lifecycle with ML-DSA-87 signatures
+//
+// Lex Architecture:
+//   esn/global/org/polylabs/oauth/token
+//   Tokens are ML-DSA-87 signed assertions (not shared secrets).
+//   Claims are ML-KEM-1024 encrypted for confidentiality in transit.
+//   Refresh chains are strictly forward; revocation is irreversible.
+
+import polykit_identity
+import polykit_metering
+
+type TokenType = enum {
+    Access,
+    Refresh,
+    IdToken,
+}
+
+type TokenClaims = struct {
+    issuer: bytes(64),
+    subject: bytes(16),
+    audience: bytes(16),
+    issued_at: u64,
+    expires_at: u64,
+    auth_method: u8,
+    device_id: bytes(16),
+    risk_score: u16,
+    roles: bytes(256),
+    org_id: bytes(16),
+    scope: bytes(256),
+    nonce: bytes(32),
+}
+
+type PqJwt = struct {
+    token_id: bytes(16),
+    token_type: TokenType,
+    claims: TokenClaims,
+    encrypted_claims: bytes(4096),
+    signature: bytes(4627),
+    signing_key_id: bytes(32),
+}
+
+type RevocationEntry = struct {
+    token_id: bytes(16),
+    revoked_at: u64,
+    revoked_by: bytes(16),
+    reason: u8,
+    signature: bytes(4627),
+}
+
+type TokenIntrospection = struct {
+    active: bool,
+    token_type: TokenType,
+    subject: bytes(16),
+    scope: bytes(256),
+    issued_at: u64,
+    expires_at: u64,
+    remaining_ttl_ms: u64,
+}
+
+// --- Issue a PQ-JWT token with ML-DSA-87 signature ---
+circuit issue_token(
+    token_type: TokenType,
+    claims: TokenClaims,
+    signing_sk: bytes(4896),
+    signing_key_id: bytes(32),
+    recipient_pk: bytes(1568)
+) -> PqJwt
+    profile poly_framework_sensitive
+    lex esn/global/org/polylabs/oauth/token
+    constant_time true
+    observe metrics: [tokens_issued, token_issue_latency_ns, tokens_by_type]
+    monitor "token_issuance_rate" { tokens_issued < 1000/s }
+    invariant "claims_valid" { claims.expires_at > claims.issued_at }
+    invariant "signing_key_present" { len(signing_sk) == 4896 }
+    meters [compute_cycles, memory_bytes]
+    test golden "issue_access_token" {
+        let sk = bytes(4896, 0xBB)
+        let rpk = bytes(1568, 0xCC)
+        let claims = TokenClaims {
+            issuer: bytes(64, 0x01), subject: bytes(16, 0x02),
+            audience: bytes(16, 0x03), issued_at: 1000, expires_at: 4600000,
+            auth_method: 0, device_id: bytes(16, 0x04), risk_score: 50,
+            roles: bytes(256, 0x00), org_id: bytes(16, 0x05),
+            scope: bytes(256, 0x00), nonce: bytes(32, 0xAA),
+        }
+        let tok = issue_token(Access, claims, sk, bytes(32, 0xDD), rpk)
+        assert len(tok.token_id) == 16
+        assert len(tok.signature) == 4627
+    }
+    kat_vector "mlkem_encaps_token" {
+        pk: bytes(1568, 0xCC)
+        function: mlkem_encaps
+    }
+    kat_vector "mldsa_sign_token" {
+        sk: bytes(4896, 0xBB)
+        message: bytes(128, 0xCC)
+        function: mldsa_sign
+    }
+    fuzz_target "issue_token_fuzz" {
+        fuzz token_type: TokenType { random }
+        fuzz claims: TokenClaims { random, expires_at > issued_at }
+        fuzz signing_sk: bytes(4896, random)
+        fuzz signing_key_id: bytes(32, random)
+        fuzz recipient_pk: bytes(1568, random)
+        assert len(output.token_id) == 16
+        assert len(output.signature) == 4627
+    }
+{
+    let token_id = bit_slice(sha3_256(concat(claims.subject, claims.nonce, now_ns())), 0, 128)
+
+    let claims_bytes = serialize(claims)
+    let kem_result = mlkem_encaps(recipient_pk)
+    let shared_secret = blake3(kem_result)
+    let encrypted_claims = aes256_gcm_encrypt(claims_bytes, shared_secret, token_id)
+
+    let sig_payload = concat(token_id, token_type, claims_bytes)
+    let signature = mldsa_sign(signing_sk, sig_payload)
+
+    polykit_metering::record_usage(claims.subject, "token_issue", DimensionValues {
+        executions: 1, hashes: 2, bandwidth: len(encrypted_claims),
+        storage: 0, observables: 1, proofs: 1, circuits: 0, mpc_sessions: 0,
+    })
+
+    PqJwt {
+        token_id: token_id,
+        token_type: token_type,
+        claims: claims,
+        encrypted_claims: encrypted_claims,
+        signature: signature,
+        signing_key_id: signing_key_id,
+    }
+}
+
+// --- Refresh a token, rotating the refresh chain forward ---
+circuit refresh_token(
+    current_refresh: PqJwt,
+    signing_sk: bytes(4896),
+    signing_key_id: bytes(32),
+    recipient_pk: bytes(1568),
+    issuer_pk: bytes(2592)
+) -> (PqJwt, PqJwt)
+    profile poly_framework_sensitive
+    lex esn/global/org/polylabs/oauth/token
+    constant_time true
+    observe metrics: [tokens_refreshed, refresh_latency_ns, refresh_chain_depth]
+    monitor "refresh_rate" { tokens_refreshed < 500/s }
+    invariant "refresh_type" { current_refresh.token_type == TokenType::Refresh }
+    invariant "not_expired" { current_refresh.claims.expires_at > now_ns() / 1000000 }
+    meters [compute_cycles, memory_bytes]
+{
+    let sig_payload = concat(current_refresh.token_id, current_refresh.token_type,
+                             serialize(current_refresh.claims))
+    let sig_valid = mldsa_verify(sig_payload, current_refresh.signature, issuer_pk)
+    if !sig_valid { abort "invalid_refresh_token_signature" }
+
+    let ts = now_ns() / 1000000
+    let access_claims = TokenClaims {
+        ..current_refresh.claims,
+        issued_at: ts,
+        expires_at: ts + 3600000,
+        nonce: csprng(32),
+    }
+    let new_access = issue_token(TokenType::Access, access_claims, signing_sk,
+                                 signing_key_id, recipient_pk)
+
+    let refresh_claims = TokenClaims {
+        ..current_refresh.claims,
+        issued_at: ts,
+        expires_at: ts + 86400000,
+        nonce: csprng(32),
+    }
+    let new_refresh = issue_token(TokenType::Refresh, refresh_claims, signing_sk,
+                                  signing_key_id, recipient_pk)
+
+    (new_access, new_refresh)
+}
+
+// --- Revoke a token (irreversible) ---
+circuit revoke_token(
+    token_id: bytes(16),
+    revoker_id: bytes(16),
+    reason: u8,
+    signing_sk: bytes(4896)
+) -> RevocationEntry
+    profile poly_framework_sensitive
+    lex esn/global/org/polylabs/oauth/token
+    constant_time true
+    observe metrics: [tokens_revoked, revocation_latency_ns]
+    monitor "revocation_spike" { tokens_revoked < 50/s per revoker_id }
+    meters [compute_cycles, memory_bytes]
+{
+    let ts = now_ns() / 1000000
+    let revocation_payload = concat(token_id, revoker_id, reason, ts)
+    let signature = mldsa_sign(signing_sk, revocation_payload)
+
+    let entry = RevocationEntry {
+        token_id: token_id,
+        revoked_at: ts,
+        revoked_by: revoker_id,
+        reason: reason,
+        signature: signature,
+    }
+
+    emit(revocation_events, entry)
+    entry
+}
+
+// --- Verify a PQ-JWT token signature and expiry ---
+circuit verify_token(token: PqJwt, issuer_pk: bytes(2592)) -> bool
+    profile poly_framework_standard
+    lex esn/global/org/polylabs/oauth/token
+    observe metrics: [token_verifications, verify_successes, verify_failures]
+    monitor "verify_failure_rate" { verify_failures / token_verifications < 0.05 }
+{
+    let ts = now_ns() / 1000000
+    let not_expired = token.claims.expires_at > ts
+
+    let sig_payload = concat(token.token_id, token.token_type, serialize(token.claims))
+    let sig_valid = mldsa_verify(sig_payload, token.signature, issuer_pk)
+
+    let not_revoked = !revocation_check(token.token_id)
+
+    not_expired and sig_valid and not_revoked
+}
+
+// --- Introspect token for resource servers ---
+circuit introspect_token(token: PqJwt, issuer_pk: bytes(2592)) -> TokenIntrospection
+    profile poly_framework_standard
+    lex esn/global/org/polylabs/oauth/token
+    observe metrics: [introspection_requests]
+{
+    let valid = verify_token(token, issuer_pk)
+    let ts = now_ns() / 1000000
+    let remaining = if valid { token.claims.expires_at - ts } else { 0 }
+
+    TokenIntrospection {
+        active: valid,
+        token_type: token.token_type,
+        subject: token.claims.subject,
+        scope: token.claims.scope,
+        issued_at: token.claims.issued_at,
+        expires_at: token.claims.expires_at,
+        remaining_ttl_ms: remaining,
+    }
+}

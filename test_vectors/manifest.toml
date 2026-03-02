@@ -1,0 +1,47 @@
+[test_suite]
+name = "polyoauth-core-vectors"
+version = "0.1.0"
+circuit_id = "esn.polylabs.polyoauth"
+vector_count = 7
+
+[[test_suite.vectors]]
+file = "polyoauth.esz"
+circuit = "authenticate"
+category = "happy_path"
+name = "happy path — SPARK biometric authentication and session creation"
+
+[[test_suite.vectors]]
+file = "polyoauth.esz"
+circuit = "grant_token"
+category = "happy_path"
+name = "happy path — exchange auth code for token grant"
+
+[[test_suite.vectors]]
+file = "polyoauth.esz"
+circuit = "create_session"
+category = "edge_case"
+name = "edge case — concurrent session limit exceeded"
+
+[[test_suite.vectors]]
+file = "polyoauth.esz"
+circuit = "grant_token"
+category = "crypto"
+name = "crypto — ML-DSA-87 token signature verification"
+
+[[test_suite.vectors]]
+file = "polyoauth.esz"
+circuit = "federate_identity"
+category = "crypto"
+name = "federation — cross-IdP identity bridging with attestation"
+
+[[test_suite.vectors]]
+file = "polyoauth.esz"
+circuit = "authenticate"
+category = "telemetry_isolation"
+name = "blind telemetry isolation — polyoauth metrics scoped to own lex namespace"
+
+[[test_suite.vectors]]
+file = "polyoauth.esz"
+circuit = "assess_risk"
+category = "error_handling"
+name = "error handling — risk assessment blocks suspicious auth attempt"
