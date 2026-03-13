@@ -1,4 +1,4 @@
-// Poly OAuth Token — PQ-JWT lifecycle with ML-DSA-87 signatures
+// Poly OAuth Token — PQ-JWT lifecycle with ML-DSA-87 signatures (v0.11.0)
 //
 // Lex Architecture:
 //   esn/global/org/polylabs/oauth/token
@@ -30,7 +30,7 @@ type TokenClaims = struct {
     nonce: bytes(32),
 }
 
-type PqJwt = struct {
+data PqJwt : oauth v1 {
     token_id: bytes(16),
     token_type: TokenType,
     claims: TokenClaims,
@@ -38,16 +38,31 @@ type PqJwt = struct {
     signature: bytes(4627),
     signing_key_id: bytes(32),
 }
+    store kv
+    govern lex esn/global/org/polylabs/oauth/token
+    cortex {
+        redact [encrypted_claims, signature]
+        obfuscate [signing_key_id]
+        infer on_write
+        on_anomaly alert "oauth-security"
+    }
 
-type RevocationEntry = struct {
+data RevocationEntry : oauth v1 {
     token_id: bytes(16),
     revoked_at: u64,
     revoked_by: bytes(16),
     reason: u8,
     signature: bytes(4627),
 }
+    store kv
+    govern lex esn/global/org/polylabs/oauth/token
+    cortex {
+        obfuscate [revoked_by]
+        infer on_write
+        on_anomaly alert "oauth-security"
+    }
 
-type TokenIntrospection = struct {
+data TokenIntrospection : oauth v1 {
     active: bool,
     token_type: TokenType,
     subject: bytes(16),
@@ -56,6 +71,19 @@ type TokenIntrospection = struct {
     expires_at: u64,
     remaining_ttl_ms: u64,
 }
+    store kv
+    govern lex esn/global/org/polylabs/oauth/token
+    cortex {
+        obfuscate [subject]
+        infer on_read
+    }
+
+stream token_lifecycle_events: event<PqJwt>
+    | throttle 5000/s burst 10000
+
+stream revocation_stream: event<RevocationEntry>
+    retention 7y
+    consumers [governance, audit, streamsight, oauth_security]
 
 // --- Issue a PQ-JWT token with ML-DSA-87 signature ---
 circuit issue_token(
@@ -67,44 +95,16 @@ circuit issue_token(
 ) -> PqJwt
     profile poly_framework_sensitive
     lex esn/global/org/polylabs/oauth/token
+    precision C
     constant_time true
     observe metrics: [tokens_issued, token_issue_latency_ns, tokens_by_type]
     monitor "token_issuance_rate" { tokens_issued < 1000/s }
     invariant "claims_valid" { claims.expires_at > claims.issued_at }
     invariant "signing_key_present" { len(signing_sk) == 4896 }
+    property safety "token_signed_before_emit" { len(output.signature) == 4627 }
+    property liveness "token_eventually_issued" { eventually(tokens_issued > 0) }
     meters [compute_cycles, memory_bytes]
-    test golden "issue_access_token" {
-        let sk = bytes(4896, 0xBB)
-        let rpk = bytes(1568, 0xCC)
-        let claims = TokenClaims {
-            issuer: bytes(64, 0x01), subject: bytes(16, 0x02),
-            audience: bytes(16, 0x03), issued_at: 1000, expires_at: 4600000,
-            auth_method: 0, device_id: bytes(16, 0x04), risk_score: 50,
-            roles: bytes(256, 0x00), org_id: bytes(16, 0x05),
-            scope: bytes(256, 0x00), nonce: bytes(32, 0xAA),
-        }
-        let tok = issue_token(Access, claims, sk, bytes(32, 0xDD), rpk)
-        assert len(tok.token_id) == 16
-        assert len(tok.signature) == 4627
-    }
-    kat_vector "mlkem_encaps_token" {
-        pk: bytes(1568, 0xCC)
-        function: mlkem_encaps
-    }
-    kat_vector "mldsa_sign_token" {
-        sk: bytes(4896, 0xBB)
-        message: bytes(128, 0xCC)
-        function: mldsa_sign
-    }
-    fuzz_target "issue_token_fuzz" {
-        fuzz token_type: TokenType { random }
-        fuzz claims: TokenClaims { random, expires_at > issued_at }
-        fuzz signing_sk: bytes(4896, random)
-        fuzz signing_key_id: bytes(32, random)
-        fuzz recipient_pk: bytes(1568, random)
-        assert len(output.token_id) == 16
-        assert len(output.signature) == 4627
-    }
+    wasm_abi [eslite_insert, stream_emit, now]
 {
     let token_id = bit_slice(sha3_256(concat(claims.subject, claims.nonce, now_ns())), 0, 128)
 
@@ -121,7 +121,7 @@ circuit issue_token(
         storage: 0, observables: 1, proofs: 1, circuits: 0, mpc_sessions: 0,
     })
 
-    PqJwt {
+    let token = PqJwt {
         token_id: token_id,
         token_type: token_type,
         claims: claims,
@@ -129,6 +129,9 @@ circuit issue_token(
         signature: signature,
         signing_key_id: signing_key_id,
     }
+
+    emit(token_lifecycle_events, token)
+    token
 }
 
 // --- Refresh a token, rotating the refresh chain forward ---
@@ -141,12 +144,15 @@ circuit refresh_token(
 ) -> (PqJwt, PqJwt)
     profile poly_framework_sensitive
     lex esn/global/org/polylabs/oauth/token
+    precision C
     constant_time true
     observe metrics: [tokens_refreshed, refresh_latency_ns, refresh_chain_depth]
     monitor "refresh_rate" { tokens_refreshed < 500/s }
     invariant "refresh_type" { current_refresh.token_type == TokenType::Refresh }
     invariant "not_expired" { current_refresh.claims.expires_at > now_ns() / 1000000 }
+    property safety "old_token_superseded" { current_refresh invalidated after refresh }
     meters [compute_cycles, memory_bytes]
+    wasm_abi [eslite_insert, now]
 {
     let sig_payload = concat(current_refresh.token_id, current_refresh.token_type,
                              serialize(current_refresh.claims))
@@ -184,10 +190,13 @@ circuit revoke_token(
 ) -> RevocationEntry
     profile poly_framework_sensitive
     lex esn/global/org/polylabs/oauth/token
+    precision C
     constant_time true
     observe metrics: [tokens_revoked, revocation_latency_ns]
     monitor "revocation_spike" { tokens_revoked < 50/s per revoker_id }
+    property safety "revocation_irreversible" { once revoked, token never reactivates }
     meters [compute_cycles, memory_bytes]
+    wasm_abi [eslite_insert, stream_emit, now]
 {
     let ts = now_ns() / 1000000
     let revocation_payload = concat(token_id, revoker_id, reason, ts)
@@ -201,7 +210,7 @@ circuit revoke_token(
         signature: signature,
     }
 
-    emit(revocation_events, entry)
+    emit(revocation_stream, entry)
     entry
 }
 
@@ -209,6 +218,7 @@ circuit revoke_token(
 circuit verify_token(token: PqJwt, issuer_pk: bytes(2592)) -> bool
     profile poly_framework_standard
     lex esn/global/org/polylabs/oauth/token
+    precision B
     observe metrics: [token_verifications, verify_successes, verify_failures]
     monitor "verify_failure_rate" { verify_failures / token_verifications < 0.05 }
 {
@@ -227,7 +237,8 @@ circuit verify_token(token: PqJwt, issuer_pk: bytes(2592)) -> bool
 circuit introspect_token(token: PqJwt, issuer_pk: bytes(2592)) -> TokenIntrospection
     profile poly_framework_standard
     lex esn/global/org/polylabs/oauth/token
-    observe metrics: [introspection_requests]
+    precision B
+    observe metrics: [introspection_requests, introspection_latency_ns]
 {
     let valid = verify_token(token, issuer_pk)
     let ts = now_ns() / 1000000
@@ -241,5 +252,76 @@ circuit introspect_token(token: PqJwt, issuer_pk: bytes(2592)) -> TokenIntrospec
         issued_at: token.claims.issued_at,
         expires_at: token.claims.expires_at,
         remaining_ttl_ms: remaining,
+    }
+}
+
+// ── Test / KAT / Fuzz annotations ──────────────────────────────
+
+test golden "issue_access_token" {
+    input {
+        token_type: TokenType::Access
+        signing_sk: hex("BB" * 4896)
+        signing_key_id: hex("DD" * 32)
+        recipient_pk: hex("CC" * 1568)
+        claims: TokenClaims {
+            issuer: hex("01" * 64), subject: hex("02" * 16),
+            audience: hex("03" * 16), issued_at: 1000, expires_at: 4600000,
+            auth_method: 0, device_id: hex("04" * 16), risk_score: 50,
+            roles: hex("00" * 256), org_id: hex("05" * 16),
+            scope: hex("00" * 256), nonce: hex("AA" * 32),
+        }
+    }
+    assert {
+        len(token.token_id) == 16
+        len(token.signature) == 4627
+    }
+}
+
+kat_vector "mlkem_encaps_token" {
+    function: "mlkem_encaps"
+    input: {
+        pk: hex("CC" * 1568)
+    }
+    post_condition: {
+        len(ciphertext) > 0
+    }
+}
+
+kat_vector "mldsa_sign_token" {
+    function: "mldsa_sign"
+    input: {
+        sk: hex("BB" * 4896)
+        message: hex("CC" * 128)
+    }
+    post_condition: {
+        len(signature) == 4627
+    }
+}
+
+fuzz_target "issue_token_fuzz" {
+    inputs {
+        token_type: TokenType
+        claims: TokenClaims { expires_at > issued_at }
+        signing_sk: bytes(4896)
+        signing_key_id: bytes(32)
+        recipient_pk: bytes(1568)
+    }
+    assert {
+        no_panic
+        len(output.token_id) == 16
+        len(output.signature) == 4627
+    }
+}
+
+fuzz_target "revoke_token_fuzz" {
+    inputs {
+        token_id: bytes(16)
+        revoker_id: bytes(16)
+        reason: u8
+        signing_sk: bytes(4896)
+    }
+    assert {
+        no_panic
+        constant_time true
     }
 }

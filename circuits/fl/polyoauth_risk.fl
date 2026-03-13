@@ -1,4 +1,4 @@
-// Poly OAuth Risk — ESLM-powered authentication risk scoring
+// Poly OAuth Risk — ESLM-powered authentication risk scoring (v0.11.0)
 //
 // Lex Architecture:
 //   esn/global/org/polylabs/oauth/risk
@@ -9,7 +9,7 @@
 import polykit_identity
 import polykit_metering
 
-type RiskScore = struct {
+data RiskScore : oauth v1 {
     overall: u16,
     geo_velocity: u16,
     device_trust: u16,
@@ -19,6 +19,12 @@ type RiskScore = struct {
     requires_step_up: bool,
     requires_block: bool,
 }
+    store kv
+    govern lex esn/global/org/polylabs/oauth/risk
+    cortex {
+        infer on_write
+        on_anomaly alert "oauth-security"
+    }
 
 type RiskFactors = struct {
     user_id: bytes(16),
@@ -32,13 +38,20 @@ type RiskFactors = struct {
     auth_method: u8,
 }
 
-type AnomalySignal = struct {
+data AnomalySignal : oauth v1 {
     signal_type: u8,
     severity: u16,
     description_hash: bytes(32),
     evidence_hash: bytes(32),
     timestamp_ns: u64,
 }
+    store kv
+    govern lex esn/global/org/polylabs/oauth/risk
+    cortex {
+        infer on_write
+        on_anomaly alert "oauth-security"
+        on_suggestion store "cortex/oauth/anomalies"
+    }
 
 type GeoVelocity = struct {
     previous_geo_hash: bytes(8),
@@ -51,7 +64,7 @@ type GeoVelocity = struct {
     impossible_travel: bool,
 }
 
-type UserBaseline = struct {
+data UserBaseline : oauth v1 {
     user_id: bytes(16),
     typical_geo_hashes: [bytes(8); 8],
     typical_hours: bytes(3),
@@ -61,6 +74,13 @@ type UserBaseline = struct {
     login_frequency_per_day: u16,
     last_updated: u64,
 }
+    store kv
+    govern lex esn/global/org/polylabs/oauth/risk
+    cortex {
+        obfuscate [user_id]
+        infer on_write
+        on_anomaly alert "oauth-team"
+    }
 
 ai_feed auth_anomaly {
     input: RiskFactors,
@@ -70,32 +90,26 @@ ai_feed auth_anomaly {
     anomaly_threshold: 0.85,
 }
 
+stream risk_events: event<RiskScore>
+    | throttle 2000/s burst 4000
+
+stream anomaly_events: event<AnomalySignal>
+    retention 365d
+    consumers [streamsight, eslm, oauth_security]
+
 // --- Evaluate overall risk for an authentication attempt ---
 circuit evaluate_risk(factors: RiskFactors, baseline: UserBaseline) -> RiskScore
     profile poly_framework_sensitive
     lex esn/global/org/polylabs/oauth/risk
+    precision C
     constant_time true
     observe metrics: [risk_evaluations, high_risk_count, step_up_triggers, block_triggers]
     monitor "risk_evaluation_latency" { risk_eval_latency_ns < 5000000 }
     invariant "score_bounded" { overall <= 1000 }
+    property safety "high_risk_blocks" { overall > 800 implies requires_block }
+    property safety "elevated_risk_step_up" { overall > 500 implies requires_step_up }
     meters [compute_cycles, memory_bytes]
-    test golden "evaluate_low_risk" {
-        let factors = RiskFactors {
-            user_id: bytes(16, 0x01), device_fingerprint_hash: bytes(32, 0xAA),
-            geo_hash: bytes(8, 0x01), ip_hash: bytes(32, 0xBB),
-            timestamp_ns: 1000000000000, user_agent_hash: bytes(32, 0xCC),
-            is_known_device: true, is_known_network: true, auth_method: 0,
-        }
-        let baseline = UserBaseline {
-            user_id: bytes(16, 0x01), typical_geo_hashes: [bytes(8, 0x01); 8],
-            typical_hours: bytes(3, 0xFF), known_devices: [bytes(32, 0xAA); 8],
-            known_networks: [bytes(32, 0xBB); 8], avg_session_duration_ms: 3600000,
-            login_frequency_per_day: 5, last_updated: 0,
-        }
-        let score = evaluate_risk(factors, baseline)
-        assert score.overall <= 200
-        assert score.requires_step_up == false
-    }
+    wasm_abi [eslite_query, stream_emit, now]
 {
     let geo = check_geo_velocity(factors.user_id, factors.geo_hash, factors.timestamp_ns, baseline)
     let device = score_device_trust(factors.device_fingerprint_hash, factors.is_known_device, baseline)
@@ -118,7 +132,7 @@ circuit evaluate_risk(factors: RiskFactors, baseline: UserBaseline) -> RiskScore
 
     let overall = min(weighted_sum, 1000)
 
-    RiskScore {
+    let score = RiskScore {
         overall: overall,
         geo_velocity: geo_score(geo),
         device_trust: device,
@@ -128,12 +142,16 @@ circuit evaluate_risk(factors: RiskFactors, baseline: UserBaseline) -> RiskScore
         requires_step_up: overall > 500,
         requires_block: overall > 800,
     }
+
+    emit(risk_events, score)
+    score
 }
 
 // --- Check geo-velocity (impossible travel detection) ---
 circuit check_geo_velocity(user_id: bytes(16), current_geo: bytes(8), current_ts: u64, baseline: UserBaseline) -> GeoVelocity
     profile poly_framework_standard
     lex esn/global/org/polylabs/oauth/risk
+    precision B
     observe metrics: [geo_velocity_checks, impossible_travel_detections]
     monitor "impossible_travel_rate" { impossible_travel_detections < 5/s }
 {
@@ -166,6 +184,7 @@ circuit check_geo_velocity(user_id: bytes(16), current_geo: bytes(8), current_ts
 circuit score_device_trust(device_hash: bytes(32), is_known: bool, baseline: UserBaseline) -> u16
     profile poly_framework_standard
     lex esn/global/org/polylabs/oauth/risk
+    precision B
     observe metrics: [device_trust_evaluations, unknown_device_count]
 {
     let in_baseline = array_contains(baseline.known_devices, device_hash)
@@ -182,8 +201,10 @@ circuit score_device_trust(device_hash: bytes(32), is_known: bool, baseline: Use
 circuit detect_anomaly(factors: RiskFactors, baseline: UserBaseline) -> AnomalySignal
     profile poly_framework_sensitive
     lex esn/global/org/polylabs/oauth/risk
+    precision C
     observe metrics: [anomaly_detections, anomaly_severity_sum]
     monitor "anomaly_rate" { anomaly_detections < 20/s }
+    wasm_abi [stream_emit, now]
 {
     let eslm_result = eslm_evaluate(auth_anomaly, factors)
 
@@ -193,21 +214,28 @@ circuit detect_anomaly(factors: RiskFactors, baseline: UserBaseline) -> AnomalyS
     let severity = eslm_result.confidence * 1000
     let combined = if freq_anomaly { min(severity + 200, 1000) } else { severity }
 
-    AnomalySignal {
+    let signal = AnomalySignal {
         signal_type: eslm_result.signal_type,
         severity: combined,
         description_hash: sha3_256(eslm_result.description),
         evidence_hash: sha3_256(serialize(factors)),
         timestamp_ns: now_ns(),
     }
+
+    if combined > 500 {
+        emit(anomaly_events, signal)
+    }
+    signal
 }
 
 // --- Update user baseline from successful authentication ---
 circuit update_baseline(user_id: bytes(16), factors: RiskFactors, current_baseline: UserBaseline) -> UserBaseline
     profile poly_framework_standard
     lex esn/global/org/polylabs/oauth/risk
+    precision B
     observe metrics: [baseline_updates]
     invariant "baseline_owner" { user_id == current_baseline.user_id }
+    property safety "baseline_monotonic" { output.last_updated >= current_baseline.last_updated }
     meters [compute_cycles, memory_bytes]
     wasm_abi [eslite_insert, now]
 {
@@ -236,4 +264,61 @@ circuit update_baseline(user_id: bytes(16), factors: RiskFactors, current_baseli
 
     eslite_insert(user_id, updated)
     updated
+}
+
+// ── Test / KAT / Fuzz annotations ──────────────────────────────
+
+test golden "evaluate_low_risk" {
+    input {
+        factors: RiskFactors {
+            user_id: hex("01" * 16), device_fingerprint_hash: hex("AA" * 32),
+            geo_hash: hex("01" * 8), ip_hash: hex("BB" * 32),
+            timestamp_ns: 1000000000000, user_agent_hash: hex("CC" * 32),
+            is_known_device: true, is_known_network: true, auth_method: 0,
+        }
+        baseline: UserBaseline {
+            user_id: hex("01" * 16), typical_geo_hashes: [hex("01" * 8); 8],
+            typical_hours: hex("FF" * 3), known_devices: [hex("AA" * 32); 8],
+            known_networks: [hex("BB" * 32); 8], avg_session_duration_ms: 3600000,
+            login_frequency_per_day: 5, last_updated: 0,
+        }
+    }
+    assert {
+        score.overall <= 200
+        score.requires_step_up == false
+        score.requires_block == false
+    }
+}
+
+test golden "evaluate_impossible_travel" {
+    input {
+        factors: RiskFactors {
+            user_id: hex("01" * 16), device_fingerprint_hash: hex("FF" * 32),
+            geo_hash: hex("FF" * 8), ip_hash: hex("FF" * 32),
+            timestamp_ns: 1000000000000, user_agent_hash: hex("FF" * 32),
+            is_known_device: false, is_known_network: false, auth_method: 0,
+        }
+        baseline: UserBaseline {
+            user_id: hex("01" * 16), typical_geo_hashes: [hex("01" * 8); 8],
+            typical_hours: hex("00" * 3), known_devices: [hex("AA" * 32); 8],
+            known_networks: [hex("BB" * 32); 8], avg_session_duration_ms: 3600000,
+            login_frequency_per_day: 5, last_updated: 0,
+        }
+    }
+    assert {
+        score.overall > 500
+        score.requires_step_up == true
+    }
+}
+
+fuzz_target "evaluate_risk_fuzz" {
+    inputs {
+        factors: RiskFactors
+        baseline: UserBaseline
+    }
+    assert {
+        no_panic
+        constant_time true
+        output.overall <= 1000
+    }
 }

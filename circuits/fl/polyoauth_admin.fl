@@ -1,4 +1,4 @@
-// Poly OAuth Admin -- Organization and application management
+// Poly OAuth Admin — Organization and application management (v0.11.0)
 //
 // Lex Architecture:
 //   esn/global/org/polylabs/oauth/admin
@@ -9,7 +9,7 @@ import polykit_identity
 import polykit_metering
 import polykit_governance
 
-type OrgConfig = struct {
+data OrgConfig : oauth v1 {
     org_id: bytes(16),
     name: bytes(256),
     domain: bytes(256),
@@ -23,8 +23,15 @@ type OrgConfig = struct {
     created_at: u64,
     updated_at: u64,
 }
+    store kv
+    govern lex esn/global/org/polylabs/oauth/admin
+    cortex {
+        obfuscate [saml_metadata_hash, scim_endpoint_hash]
+        infer on_write
+        on_anomaly alert "oauth-team"
+    }
 
-type AppRegistration = struct {
+data AppRegistration : oauth v1 {
     app_id: bytes(16),
     org_id: bytes(16),
     name: bytes(256),
@@ -36,8 +43,15 @@ type AppRegistration = struct {
     token_ttl_refresh_ms: u64,
     created_at: u64,
 }
+    store kv
+    govern lex esn/global/org/polylabs/oauth/admin
+    cortex {
+        redact [redirect_uris_hash]
+        infer on_write
+        on_anomaly alert "oauth-security"
+    }
 
-type ConditionalAccessPolicy = struct {
+data ConditionalAccessPolicy : oauth v1 {
     policy_id: bytes(16),
     org_id: bytes(16),
     name: bytes(256),
@@ -51,8 +65,15 @@ type ConditionalAccessPolicy = struct {
     enabled: bool,
     created_at: u64,
 }
+    store kv
+    govern lex esn/global/org/polylabs/oauth/admin
+    cortex {
+        obfuscate [allowed_networks_hash]
+        infer on_write
+        on_anomaly alert "oauth-team"
+    }
 
-type ScimMapping = struct {
+data ScimMapping : oauth v1 {
     mapping_id: bytes(16),
     org_id: bytes(16),
     external_user_id: bytes(64),
@@ -62,26 +83,35 @@ type ScimMapping = struct {
     last_synced_at: u64,
     deprovisioned_at: u64,
 }
+    store kv
+    govern lex esn/global/org/polylabs/oauth/admin
+    cortex {
+        obfuscate [external_user_id, internal_user_id]
+        infer on_write
+        on_anomaly alert "oauth-team"
+    }
+
+stream admin_events: event<OrgConfig>
+    | throttle 500/s burst 1000
+
+stream scim_events: event<ScimMapping>
+    retention 7y
+    consumers [governance, audit, streamsight]
 
 // --- Register a new organization ---
 circuit register_org(admin_id: bytes(16), name: bytes(256), domain: bytes(256), tier: u8, signing_sk: bytes(4896)) -> OrgConfig
     profile poly_framework_sensitive
     lex esn/global/org/polylabs/oauth/admin
+    precision C
     constant_time true
     observe metrics: [orgs_registered, org_registration_latency_ns]
     monitor "org_registration_rate" { orgs_registered < 10/s }
     invariant "valid_tier" { tier >= 1 and tier <= 3 }
     invariant "domain_present" { len(domain) > 0 }
+    property safety "tier_determines_limits" { tier == 1 implies max_users == 100 }
+    property liveness "org_eventually_registered" { eventually(orgs_registered > 0) }
     meters [compute_cycles, memory_bytes]
-    wasm_abi [eslite_insert, now]
-    test golden "register_org_basic" {
-        let sk = bytes(4896, 0xBB)
-        let aid = bytes(16, 0x01)
-        let org = register_org(aid, "Acme Corp", "acme.com", 2, sk)
-        assert len(org.org_id) == 16
-        assert org.tier == 2
-        assert org.max_users == 1000
-    }
+    wasm_abi [eslite_insert, stream_emit, now]
 {
     let ts = now_ns() / 1000000
     let org_seed = concat(admin_id, domain, csprng(16), ts)
@@ -117,6 +147,7 @@ circuit register_org(admin_id: bytes(16), name: bytes(256), domain: bytes(256), 
         storage: 512, observables: 1, proofs: 1, circuits: 0, mpc_sessions: 0,
     })
 
+    emit(admin_events, org)
     org
 }
 
@@ -124,8 +155,10 @@ circuit register_org(admin_id: bytes(16), name: bytes(256), domain: bytes(256), 
 circuit register_app(org_id: bytes(16), name: bytes(256), redirect_uris_hash: bytes(32), grant_types: u16, client_type: u8, tags: bytes(128), signing_sk: bytes(4896)) -> AppRegistration
     profile poly_framework_sensitive
     lex esn/global/org/polylabs/oauth/admin
+    precision C
     observe metrics: [apps_registered, app_registration_latency_ns]
     invariant "org_exists" { eslite_exists(org_id) }
+    property safety "app_limit_enforced" { count_apps(org_id) <= org.max_apps }
     meters [compute_cycles, memory_bytes]
     wasm_abi [eslite_insert, eslite_query, now]
 {
@@ -159,6 +192,7 @@ circuit register_app(org_id: bytes(16), name: bytes(256), redirect_uris_hash: by
 circuit update_policy(policy: ConditionalAccessPolicy, signing_sk: bytes(4896)) -> ConditionalAccessPolicy
     profile poly_framework_sensitive
     lex esn/global/org/polylabs/oauth/admin
+    precision C
     observe metrics: [policies_updated]
     invariant "org_exists" { eslite_exists(policy.org_id) }
     invariant "valid_risk_threshold" { policy.max_risk_score <= 1000 }
@@ -174,9 +208,11 @@ circuit update_policy(policy: ConditionalAccessPolicy, signing_sk: bytes(4896)) 
 circuit create_conditional_access(org_id: bytes(16), name: bytes(256), app_tags: bytes(128), required_method: u8, max_risk: u16, action: u8, priority: u16, signing_sk: bytes(4896)) -> ConditionalAccessPolicy
     profile poly_framework_sensitive
     lex esn/global/org/polylabs/oauth/admin
+    precision C
     observe metrics: [policies_created, policy_creation_latency_ns]
     invariant "org_exists" { eslite_exists(org_id) }
     invariant "valid_priority" { priority > 0 }
+    property safety "policy_scoped_to_org" { output.org_id == org_id }
     meters [compute_cycles, memory_bytes]
     wasm_abi [eslite_insert, now]
 {
@@ -214,10 +250,12 @@ circuit create_conditional_access(org_id: bytes(16), name: bytes(256), app_tags:
 circuit provision_user(org_id: bytes(16), external_user_id: bytes(64), user_pk: bytes(2592), signing_sk: bytes(4896)) -> ScimMapping
     profile poly_framework_sensitive
     lex esn/global/org/polylabs/oauth/admin
+    precision C
     observe metrics: [users_provisioned, scim_provision_latency_ns]
     invariant "org_exists" { eslite_exists(org_id) }
+    property safety "mapping_active_on_provision" { output.status == 1 }
     meters [compute_cycles, memory_bytes]
-    wasm_abi [eslite_insert, now]
+    wasm_abi [eslite_insert, stream_emit, now]
 {
     let ts = now_ns() / 1000000
     let internal_user_id = polykit_identity::derive_user_id(user_pk)
@@ -237,6 +275,7 @@ circuit provision_user(org_id: bytes(16), external_user_id: bytes(64), user_pk: 
 
     let _sig = mldsa_sign(signing_sk, serialize(mapping))
     eslite_insert(mapping_id, mapping)
+    emit(scim_events, mapping)
     mapping
 }
 
@@ -244,10 +283,12 @@ circuit provision_user(org_id: bytes(16), external_user_id: bytes(64), user_pk: 
 circuit deprovision_user(mapping: ScimMapping, signing_sk: bytes(4896)) -> ScimMapping
     profile poly_framework_sensitive
     lex esn/global/org/polylabs/oauth/admin
+    precision C
     observe metrics: [users_deprovisioned, scim_deprovision_latency_ns]
     invariant "user_active" { mapping.status == 1 }
+    property safety "deprovision_revokes_all" { all_sessions_revoked(mapping.internal_user_id) }
     meters [compute_cycles, memory_bytes]
-    wasm_abi [eslite_insert, now]
+    wasm_abi [eslite_insert, stream_emit, now]
 {
     let ts = now_ns() / 1000000
 
@@ -269,5 +310,67 @@ circuit deprovision_user(mapping: ScimMapping, signing_sk: bytes(4896)) -> ScimM
         storage: 0, observables: 2, proofs: 0, circuits: 0, mpc_sessions: 0,
     })
 
+    emit(scim_events, updated)
     updated
+}
+
+// ── Test / KAT / Fuzz annotations ──────────────────────────────
+
+test golden "register_org_basic" {
+    input {
+        admin_id: hex("01" * 16)
+        name: "Acme Corp"
+        domain: "acme.com"
+        tier: 2
+        signing_sk: hex("BB" * 4896)
+    }
+    assert {
+        len(org.org_id) == 16
+        org.tier == 2
+        org.max_users == 1000
+        org.mfa_required == true
+    }
+}
+
+test golden "register_app_basic" {
+    input {
+        org_id: hex("01" * 16)
+        name: "My App"
+        redirect_uris_hash: hex("AA" * 32)
+        grant_types: 0x03
+        client_type: 0
+        tags: hex("00" * 128)
+        signing_sk: hex("BB" * 4896)
+    }
+    assert {
+        len(app.app_id) == 16
+        app.token_ttl_access_ms == 3600000
+    }
+}
+
+fuzz_target "register_org_fuzz" {
+    inputs {
+        admin_id: bytes(16)
+        name: bytes(256)
+        domain: bytes(256)
+        tier: u8(1..3)
+        signing_sk: bytes(4896)
+    }
+    assert {
+        no_panic
+        constant_time true
+    }
+}
+
+fuzz_target "provision_deprovision_fuzz" {
+    inputs {
+        org_id: bytes(16)
+        external_user_id: bytes(64)
+        user_pk: bytes(2592)
+        signing_sk: bytes(4896)
+    }
+    assert {
+        no_panic
+        output.status == 1
+    }
 }

@@ -1,6 +1,6 @@
 # Poly OAuth
 
-Post-quantum biometric OAuth/OIDC identity provider built on eStream v0.8.3 and PolyKit v0.3.0.
+Post-quantum biometric OAuth/OIDC identity provider built on eStream v0.11.0 and PolyKit v0.3.0.
 
 ## Overview
 
@@ -52,7 +52,7 @@ Internal management uses eStream Wire Protocol. External OAuth/OIDC/SAML endpoin
 
 ## Platform
 
-- eStream v0.8.3
+- eStream v0.11.0
 - PolyKit v0.3.0
 - ML-KEM-1024, ML-DSA-87, SHA3-256
 - 8-Dimension metering

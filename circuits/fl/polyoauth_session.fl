@@ -1,4 +1,4 @@
-// Poly OAuth Session — lifecycle management with risk-based step-up
+// Poly OAuth Session — lifecycle management with risk-based step-up (v0.11.0)
 //
 // Lex Architecture:
 //   esn/global/org/polylabs/oauth/session
@@ -27,7 +27,7 @@ type DeviceFingerprint = struct {
     language_hash: bytes(8),
 }
 
-type SessionMetadata = struct {
+data SessionMetadata : oauth v1 {
     session_id: bytes(16),
     user_id: bytes(16),
     state: SessionState,
@@ -42,8 +42,16 @@ type SessionMetadata = struct {
     expires_at: u64,
     challenge_id: bytes(16),
 }
+    store kv
+    govern lex esn/global/org/polylabs/oauth/session
+    cortex {
+        redact [ip_hash]
+        obfuscate [user_id, geo_hash]
+        infer on_write
+        on_anomaly alert "oauth-security"
+    }
 
-type SessionTransition = struct {
+data SessionTransition : oauth v1 {
     session_id: bytes(16),
     from_state: SessionState,
     to_state: SessionState,
@@ -51,6 +59,12 @@ type SessionTransition = struct {
     timestamp_ns: u64,
     signature: bytes(4627),
 }
+    store kv
+    govern lex esn/global/org/polylabs/oauth/session
+    cortex {
+        infer on_write
+        on_anomaly alert "oauth-team"
+    }
 
 state_machine session_lifecycle {
     initial Initiated
@@ -70,32 +84,26 @@ state_machine session_lifecycle {
     Active -> Revoked when admin_revoked
 }
 
+stream session_events: event<SessionMetadata>
+    | throttle 2000/s burst 4000
+
+stream session_transition_events: event<SessionTransition>
+    retention 365d
+    consumers [streamsight, audit, oauth_security]
+
 // --- Create a new session (INITIATED state) ---
 circuit create_session(user_id: bytes(16), device: DeviceFingerprint, geo_hash: bytes(8), ip_hash: bytes(32)) -> SessionMetadata
     profile poly_framework_sensitive
     lex esn/global/org/polylabs/oauth/session
+    precision C
     constant_time true
     observe metrics: [sessions_created, session_create_latency_ns]
     monitor "session_creation_rate" { sessions_created < 50/s per user_id }
     invariant "device_present" { len(device.device_id) == 16 }
+    property safety "session_starts_initiated" { output.state == SessionState::Initiated }
+    property liveness "session_eventually_created" { eventually(sessions_created > 0) }
     meters [compute_cycles, memory_bytes]
-    test golden "create_session_basic" {
-        let uid = bytes(16, 0x01)
-        let dev = DeviceFingerprint {
-            device_id: bytes(16, 0xAA), platform_hash: bytes(32, 0xBB),
-            user_agent_hash: bytes(32, 0xCC), screen_hash: bytes(16, 0xDD),
-            timezone_offset: -480, language_hash: bytes(8, 0xEE),
-        }
-        let session = create_session(uid, dev, bytes(8, 0x01), bytes(32, 0x02))
-        assert len(session.session_id) == 16
-        assert session.state == SessionState::Initiated
-    }
-    kat_vector "hkdf_sha3_session" {
-        ikm: bytes(32, 0xAA)
-        info: bytes(16, 0x01)
-        length: 32
-        function: hkdf_sha3
-    }
+    wasm_abi [eslite_insert, stream_emit, now]
 {
     let ts = now_ns() / 1000000
     let session_seed = concat(user_id, device.device_id, csprng(16), ts)
@@ -124,6 +132,7 @@ circuit create_session(user_id: bytes(16), device: DeviceFingerprint, geo_hash: 
         storage: 256, observables: 1, proofs: 0, circuits: 0, mpc_sessions: 0,
     })
 
+    emit(session_events, session)
     session
 }
 
@@ -138,11 +147,14 @@ circuit authenticate_session(
 ) -> (SessionMetadata, SessionTransition)
     profile poly_framework_sensitive
     lex esn/global/org/polylabs/oauth/session
+    precision C
     constant_time true
     observe metrics: [sessions_authenticated, auth_session_latency_ns]
     invariant "valid_state" { session.state == SessionState::Challenged }
     invariant "challenge_match" { session.challenge_id == challenge_id }
+    property safety "risk_blocks_critical" { risk_score > 800 implies output.state == SessionState::Revoked }
     meters [compute_cycles, memory_bytes]
+    wasm_abi [eslite_insert, stream_emit, now]
 {
     let ts = now_ns() / 1000000
 
@@ -183,6 +195,7 @@ circuit authenticate_session(
     }
 
     transition(session_lifecycle, session.session_id, target_state)
+    emit(session_transition_events, trans)
     (updated, trans)
 }
 
@@ -190,10 +203,12 @@ circuit authenticate_session(
 circuit refresh_session(session: SessionMetadata, new_geo_hash: bytes(8), new_ip_hash: bytes(32)) -> SessionMetadata
     profile poly_framework_standard
     lex esn/global/org/polylabs/oauth/session
+    precision B
     observe metrics: [sessions_refreshed, refresh_latency_ns]
     invariant "active_state" { session.state == SessionState::Active }
     invariant "not_expired" { session.expires_at > now_ns() / 1000000 }
     meters [compute_cycles, memory_bytes]
+    wasm_abi [now]
 {
     let ts = now_ns() / 1000000
 
@@ -222,10 +237,13 @@ circuit refresh_session(session: SessionMetadata, new_geo_hash: bytes(8), new_ip
 circuit revoke_session(session: SessionMetadata, revoker_id: bytes(16), signing_sk: bytes(4896)) -> SessionTransition
     profile poly_framework_sensitive
     lex esn/global/org/polylabs/oauth/session
+    precision C
     constant_time true
     observe metrics: [sessions_revoked, revocation_latency_ns]
     invariant "revocable_state" { session.state != SessionState::Expired and session.state != SessionState::Revoked }
+    property safety "revocation_terminal" { output.to_state == SessionState::Revoked }
     meters [compute_cycles, memory_bytes]
+    wasm_abi [eslite_insert, stream_emit, now]
 {
     let ts = now_ns() / 1000000
     let payload = concat(session.session_id, revoker_id, SessionState::Revoked, ts)
@@ -233,7 +251,7 @@ circuit revoke_session(session: SessionMetadata, revoker_id: bytes(16), signing_
 
     transition(session_lifecycle, session.session_id, SessionState::Revoked)
 
-    SessionTransition {
+    let trans = SessionTransition {
         session_id: session.session_id,
         from_state: session.state,
         to_state: SessionState::Revoked,
@@ -241,12 +259,16 @@ circuit revoke_session(session: SessionMetadata, revoker_id: bytes(16), signing_
         timestamp_ns: ts * 1000000,
         signature: sig,
     }
+
+    emit(session_transition_events, trans)
+    trans
 }
 
 // --- Check session validity ---
 circuit check_session(session: SessionMetadata) -> (bool, SessionState)
     profile poly_framework_standard
     lex esn/global/org/polylabs/oauth/session
+    precision B
     observe metrics: [session_checks]
 {
     let ts = now_ns() / 1000000
@@ -260,5 +282,62 @@ circuit check_session(session: SessionMetadata) -> (bool, SessionState)
         (false, session.state)
     } else {
         (session.state == SessionState::Active, session.state)
+    }
+}
+
+// ── Test / KAT / Fuzz annotations ──────────────────────────────
+
+test golden "create_session_basic" {
+    input {
+        user_id: hex("01" * 16)
+        device: DeviceFingerprint {
+            device_id: hex("AA" * 16), platform_hash: hex("BB" * 32),
+            user_agent_hash: hex("CC" * 32), screen_hash: hex("DD" * 16),
+            timezone_offset: -480, language_hash: hex("EE" * 8),
+        }
+        geo_hash: hex("01" * 8)
+        ip_hash: hex("02" * 32)
+    }
+    assert {
+        len(session.session_id) == 16
+        session.state == SessionState::Initiated
+    }
+}
+
+kat_vector "hkdf_sha3_session" {
+    function: "hkdf_sha3"
+    input: {
+        ikm: hex("AA" * 32)
+        info: hex("01" * 16)
+        length: 32
+    }
+    post_condition: {
+        len(output) == 32
+    }
+}
+
+fuzz_target "create_session_fuzz" {
+    inputs {
+        user_id: bytes(16)
+        device: DeviceFingerprint
+        geo_hash: bytes(8)
+        ip_hash: bytes(32)
+    }
+    assert {
+        no_panic
+        output.state == SessionState::Initiated
+    }
+}
+
+fuzz_target "revoke_session_fuzz" {
+    inputs {
+        session: SessionMetadata { state != SessionState::Expired, state != SessionState::Revoked }
+        revoker_id: bytes(16)
+        signing_sk: bytes(4896)
+    }
+    assert {
+        no_panic
+        constant_time true
+        output.to_state == SessionState::Revoked
     }
 }

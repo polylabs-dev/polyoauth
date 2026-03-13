@@ -1,4 +1,4 @@
-/// Poly OAuth Token Chain DAG
+/// Poly OAuth Token Chain DAG (v0.11.0)
 /// Stratum DAG storage + Cortex AI governance + ML-DSA-87 signed acyclic token model
 /// govern lex esn/global/org/polylabs/oauth
 
@@ -34,7 +34,7 @@ type RevocationReason = enum {
 
 // ── Data: Node types (Stratum store dag + Cortex) ────────────────
 
-data TokenNode : app v1 {
+data TokenNode : oauth v1 {
     token_id: string,
     session_id: string,
     subject_id: string,
@@ -58,7 +58,7 @@ data TokenNode : app v1 {
         on_anomaly alert "oauth-security"
     }
 
-data RevocationNode : app v1 {
+data RevocationNode : oauth v1 {
     revocation_id: string,
     token_id: string,
     revoker_id: string,
@@ -135,6 +135,20 @@ series token_series: token_chain
     lattice_imprint true
     witness_attest true
 
+// ── Streams ─────────────────────────────────────────────────────
+
+stream token_mutations: event<TokenNode>
+    retention 7y
+    consumers [governance, audit, streamsight, oauth_security]
+
+stream revocation_events: event<RevocationNode>
+    retention 7y
+    consumers [governance, audit, streamsight, oauth_security]
+
+stream token_anomaly_events: event<TokenNode>
+    retention 365d
+    consumers [streamsight, eslm, oauth_security]
+
 // ── Circuits: Token Issuance ────────────────────────────────────
 
 circuit issue_token(
@@ -159,16 +173,10 @@ circuit issue_token(
     monitor "token_issuance_rate" { tokens_issued < 1000/s }
     invariant "ttl_positive" { ttl_ms > 0 }
     invariant "scope_present" { len(scope) > 0 }
+    property safety "token_signed" { len(output.signature) > 0 }
+    property liveness "token_eventually_in_dag" { eventually(dag_exists(token_chain, output.token_id)) }
     meters [compute_cycles, memory_bytes]
     wasm_abi [eslite_insert, now]
-    test golden "issue_access_token" {
-        let sk = bytes(4896, 0xBB)
-        let epk = bytes(1568, 0xCC)
-        let tok = issue_token("sess-1", "user-1", "polylabs-oauth", "app-1", 0, "openid profile", "{}", 3600000, sk, "key-1", epk)
-        assert len(tok.token_id) > 0
-        assert tok.token_type == 0
-        assert tok.expires_at > tok.issued_at
-    }
 {
     let ts = now_ns() / 1000000
     let nonce = sha3_256(csprng(32))
@@ -261,16 +269,9 @@ circuit refresh_token(
     monitor "refresh_rate" { tokens_refreshed < 500/s }
     invariant "token_exists" { dag_exists(token_chain, current_token_id) }
     invariant "token_valid" { overlay_get(token_chain, current_token_id, validity_status) == 1 }
+    property safety "old_token_superseded" { overlay_get(token_chain, current_token_id, validity_status) == 4 after refresh }
     meters [compute_cycles, memory_bytes]
     wasm_abi [eslite_insert, now]
-    test golden "refresh_creates_new_pair" {
-        let sk = bytes(4896, 0xBB)
-        let epk = bytes(1568, 0xCC)
-        let (access, refresh) = refresh_token("tok-refresh-1", sk, "key-1", epk, 3600000, 86400000)
-        assert access.token_type == 0
-        assert refresh.token_type == 1
-        assert access.token_id != refresh.token_id
-    }
 {
     let current = dag_query(token_chain, current_token_id)
     let ts = now_ns() / 1000000
@@ -335,14 +336,9 @@ circuit revoke_token(
     observe metrics: [tokens_revoked, revocation_latency_ns, cascade_depth]
     monitor "revocation_spike" { tokens_revoked < 50/s per revoker_id }
     invariant "token_exists" { dag_exists(token_chain, token_id) }
+    property safety "revocation_cascades" { all descendants marked revoked }
     meters [compute_cycles, memory_bytes]
     wasm_abi [eslite_insert, now]
-    test golden "revoke_cascades_to_descendants" {
-        let sk = bytes(4896, 0xBB)
-        let rev = revoke_token("tok-1", "admin-1", 1, sk)
-        assert rev.token_id == "tok-1"
-        assert rev.reason == 1
-    }
 {
     let ts = now_ns() / 1000000
     let revocation_seed = concat(token_id, revoker_id, ts)
@@ -406,11 +402,7 @@ circuit verify_chain(
     povc true
     observe metrics: [chain_verifications, chain_verification_failures]
     monitor "chain_verify_failure_rate" { chain_verification_failures / chain_verifications < 0.01 }
-    test golden "revoked_token_fails_verification" {
-        let pk = bytes(2592, 0xAA)
-        let valid = verify_chain("tok-revoked-1", pk)
-        assert valid == false
-    }
+    property safety "revoked_always_fails" { validity_status == 2 implies result == false }
 {
     let token = dag_query(token_chain, token_id)
 
@@ -448,12 +440,6 @@ circuit introspect_token(
     precision B
     povc true
     observe metrics: [introspection_requests, introspection_latency_ns]
-    test golden "introspect_active_token" {
-        let pk = bytes(2592, 0xAA)
-        let (valid, tok, remaining) = introspect_token("tok-active-1", pk)
-        assert valid == true
-        assert remaining > 0
-    }
 {
     let token = dag_query(token_chain, token_id)
     let valid = verify_chain(token_id, issuer_pk)
@@ -482,6 +468,7 @@ circuit exchange_authorization_code(
     constant_time true
     observe metrics: [code_exchanges, code_exchange_failures]
     invariant "code_exists" { dag_exists(token_chain, code_token_id) }
+    property safety "code_consumed_after_exchange" { overlay_get(token_chain, code_token_id, validity_status) == 4 }
     meters [compute_cycles, memory_bytes]
     wasm_abi [eslite_insert, now]
 {
@@ -492,7 +479,6 @@ circuit exchange_authorization_code(
     if !valid { abort "invalid_code" }
 
     let challenge_hash = sha3_256(code_verifier)
-    // PKCE S256 verification against stored code_challenge in encrypted claims
 
     overlay_set(token_chain, code_token_id, validity_status, 4)
 
@@ -556,16 +542,108 @@ circuit snapshot_token_chain_state(
     snapshot_hash
 }
 
-// ── Streams ─────────────────────────────────────────────────────
+// ── Test / KAT / Fuzz annotations ──────────────────────────────
 
-stream token_mutations: event<TokenNode>
-    retention 7y
-    consumers [governance, audit, streamsight, oauth_security]
+test golden "issue_access_token" {
+    input {
+        session_id: "sess-1"
+        subject_id: "user-1"
+        issuer_id: "polylabs-oauth"
+        app_id: "app-1"
+        token_type: 0
+        scope: "openid profile"
+        claims_plaintext: "{}"
+        ttl_ms: 3600000
+        signing_sk: hex("BB" * 4896)
+        signing_key_id: "key-1"
+        encryption_pk: hex("CC" * 1568)
+    }
+    assert {
+        len(tok.token_id) > 0
+        tok.token_type == 0
+        tok.expires_at > tok.issued_at
+    }
+}
 
-stream revocation_events: event<RevocationNode>
-    retention 7y
-    consumers [governance, audit, streamsight, oauth_security]
+test golden "refresh_creates_new_pair" {
+    input {
+        current_token_id: "tok-refresh-1"
+        signing_sk: hex("BB" * 4896)
+        signing_key_id: "key-1"
+        encryption_pk: hex("CC" * 1568)
+        access_ttl_ms: 3600000
+        refresh_ttl_ms: 86400000
+    }
+    assert {
+        access.token_type == 0
+        refresh.token_type == 1
+        access.token_id != refresh.token_id
+    }
+}
 
-stream token_anomaly_events: event<TokenNode>
-    retention 365d
-    consumers [streamsight, eslm, oauth_security]
+test golden "revoke_cascades_to_descendants" {
+    input {
+        token_id: "tok-1"
+        revoker_id: "admin-1"
+        reason: 1
+        signing_sk: hex("BB" * 4896)
+    }
+    assert {
+        rev.token_id == "tok-1"
+        rev.reason == 1
+    }
+}
+
+test golden "revoked_token_fails_verification" {
+    input {
+        token_id: "tok-revoked-1"
+        issuer_pk: hex("AA" * 2592)
+    }
+    assert {
+        valid == false
+    }
+}
+
+test golden "introspect_active_token" {
+    input {
+        token_id: "tok-active-1"
+        issuer_pk: hex("AA" * 2592)
+    }
+    assert {
+        valid == true
+        remaining > 0
+    }
+}
+
+fuzz_target "issue_token_fuzz" {
+    inputs {
+        session_id: string(1..64)
+        subject_id: string(1..64)
+        issuer_id: string(1..64)
+        app_id: string(1..64)
+        token_type: u8(0..4)
+        scope: string(1..256)
+        claims_plaintext: string(0..1024)
+        ttl_ms: u64(1..86400000)
+        signing_sk: bytes(4896)
+        signing_key_id: string(1..64)
+        encryption_pk: bytes(1568)
+    }
+    assert {
+        no_panic
+        constant_time true
+    }
+}
+
+fuzz_target "revoke_cascade_fuzz" {
+    inputs {
+        token_id: string(1..64)
+        revoker_id: string(1..64)
+        reason: u8(0..5)
+        signing_sk: bytes(4896)
+    }
+    assert {
+        no_panic
+        constant_time true
+    }
+}

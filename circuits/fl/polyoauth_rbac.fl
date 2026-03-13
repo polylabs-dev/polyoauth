@@ -1,0 +1,489 @@
+// Poly OAuth RBAC — Role-based access control graph (v0.11.0)
+//
+// Lex Architecture:
+//   esn/global/org/polylabs/oauth/rbac
+//   RBAC roles: User, Admin, AppDeveloper, Auditor.
+//   Permissions are composable via PolyKit profiles.
+//   Role assignments are ML-DSA-87 signed and auditable.
+
+import polykit_identity
+import polykit_metering
+import polykit_governance
+
+// ── Enums ────────────────────────────────────────────────────────
+
+type Role = enum {
+    User,
+    Admin,
+    AppDeveloper,
+    Auditor,
+}
+
+type Permission = enum {
+    ReadProfile,
+    WriteProfile,
+    ManageApps,
+    ManageOrg,
+    ManagePolicies,
+    ViewAuditLog,
+    ManageUsers,
+    ManageFederation,
+    ViewMetrics,
+    RevokeTokens,
+    RevokeSessions,
+    ManageKeys,
+}
+
+type RoleAssignmentAction = enum {
+    Grant,
+    Revoke,
+}
+
+// ── Data declarations ───────────────────────────────────────────
+
+data RoleBinding : oauth v1 {
+    binding_id: bytes(16),
+    user_id: bytes(16),
+    org_id: bytes(16),
+    role: Role,
+    granted_by: bytes(16),
+    granted_at: u64,
+    expires_at: u64,
+    scope_restriction: string,
+    active: bool,
+}
+    store kv
+    govern lex esn/global/org/polylabs/oauth/rbac
+    cortex {
+        obfuscate [user_id, granted_by]
+        infer on_write
+        on_anomaly alert "oauth-security"
+    }
+
+data RolePermissionMap : oauth v1 {
+    role: Role,
+    permissions: list<Permission>,
+    max_token_ttl_ms: u64,
+    max_session_duration_ms: u64,
+    can_delegate: bool,
+    requires_mfa: bool,
+}
+    store kv
+    govern lex esn/global/org/polylabs/oauth/rbac
+    cortex {
+        infer on_read
+    }
+
+data AccessDecision : oauth v1 {
+    user_id: bytes(16),
+    resource: string,
+    action: string,
+    allowed: bool,
+    matching_role: Role,
+    matching_binding_id: bytes(16),
+    evaluated_at: u64,
+    reason: string,
+}
+    store kv
+    govern lex esn/global/org/polylabs/oauth/rbac
+    cortex {
+        obfuscate [user_id]
+        infer on_write
+        on_anomaly alert "oauth-security"
+        on_suggestion store "cortex/oauth/access_patterns"
+    }
+
+data RoleAuditEntry : oauth v1 {
+    entry_id: bytes(16),
+    actor_id: bytes(16),
+    target_user_id: bytes(16),
+    org_id: bytes(16),
+    action: RoleAssignmentAction,
+    role: Role,
+    timestamp: u64,
+    signature: bytes(4627),
+}
+    store kv
+    govern lex esn/global/org/polylabs/oauth/rbac
+    cortex {
+        obfuscate [actor_id, target_user_id]
+        infer on_write
+        on_anomaly alert "oauth-team"
+    }
+
+stream rbac_events: event<RoleAuditEntry>
+    retention 7y
+    consumers [governance, audit, streamsight, oauth_security]
+
+stream access_decision_events: event<AccessDecision>
+    | throttle 5000/s burst 10000
+
+// --- Initialize default role-permission mappings ---
+circuit init_role_permissions() -> list<RolePermissionMap>
+    profile poly_framework_standard
+    lex esn/global/org/polylabs/oauth/rbac
+    precision B
+    observe metrics: [role_map_initializations]
+    wasm_abi [eslite_insert]
+{
+    let user_map = RolePermissionMap {
+        role: Role::User,
+        permissions: [Permission::ReadProfile, Permission::WriteProfile],
+        max_token_ttl_ms: 3600000,
+        max_session_duration_ms: 86400000,
+        can_delegate: false,
+        requires_mfa: false,
+    }
+
+    let admin_map = RolePermissionMap {
+        role: Role::Admin,
+        permissions: [
+            Permission::ReadProfile, Permission::WriteProfile,
+            Permission::ManageApps, Permission::ManageOrg,
+            Permission::ManagePolicies, Permission::ViewAuditLog,
+            Permission::ManageUsers, Permission::ManageFederation,
+            Permission::ViewMetrics, Permission::RevokeTokens,
+            Permission::RevokeSessions, Permission::ManageKeys,
+        ],
+        max_token_ttl_ms: 7200000,
+        max_session_duration_ms: 43200000,
+        can_delegate: true,
+        requires_mfa: true,
+    }
+
+    let developer_map = RolePermissionMap {
+        role: Role::AppDeveloper,
+        permissions: [
+            Permission::ReadProfile, Permission::ManageApps,
+            Permission::ViewMetrics,
+        ],
+        max_token_ttl_ms: 3600000,
+        max_session_duration_ms: 86400000,
+        can_delegate: false,
+        requires_mfa: false,
+    }
+
+    let auditor_map = RolePermissionMap {
+        role: Role::Auditor,
+        permissions: [
+            Permission::ReadProfile, Permission::ViewAuditLog,
+            Permission::ViewMetrics,
+        ],
+        max_token_ttl_ms: 1800000,
+        max_session_duration_ms: 28800000,
+        can_delegate: false,
+        requires_mfa: true,
+    }
+
+    let maps = [user_map, admin_map, developer_map, auditor_map]
+
+    for m in maps {
+        eslite_insert("role_permissions", m.role, m)
+    }
+
+    maps
+}
+
+// --- Assign a role to a user ---
+circuit assign_role(
+    actor_id: bytes(16),
+    user_id: bytes(16),
+    org_id: bytes(16),
+    role: Role,
+    scope_restriction: string,
+    expires_at: u64,
+    signing_sk: bytes(4896),
+) -> RoleBinding
+    profile poly_framework_sensitive
+    lex esn/global/org/polylabs/oauth/rbac
+    precision C
+    constant_time true
+    observe metrics: [roles_assigned, role_assignment_latency_ns]
+    monitor "role_assignment_rate" { roles_assigned < 50/s }
+    invariant "actor_authorized" { has_permission(actor_id, org_id, Permission::ManageUsers) }
+    invariant "expiry_future" { expires_at > now_ns() / 1000000 }
+    property safety "admin_requires_mfa" { role == Role::Admin implies actor_mfa_verified }
+    property safety "no_self_promotion" { role == Role::Admin implies actor_id != user_id or actor_is_superadmin }
+    meters [compute_cycles, memory_bytes]
+    wasm_abi [eslite_insert, stream_emit, now]
+{
+    let ts = now_ns() / 1000000
+    let binding_seed = concat(user_id, org_id, role, csprng(16), ts)
+    let binding_id = bit_slice(sha3_256(binding_seed), 0, 128)
+
+    let binding = RoleBinding {
+        binding_id: binding_id,
+        user_id: user_id,
+        org_id: org_id,
+        role: role,
+        granted_by: actor_id,
+        granted_at: ts,
+        expires_at: expires_at,
+        scope_restriction: scope_restriction,
+        active: true,
+    }
+
+    let sig_payload = serialize(binding)
+    let sig = mldsa_sign(signing_sk, sig_payload)
+
+    eslite_insert("role_bindings", binding_id, binding)
+
+    let audit = RoleAuditEntry {
+        entry_id: bit_slice(sha3_256(concat(binding_id, ts)), 0, 128),
+        actor_id: actor_id,
+        target_user_id: user_id,
+        org_id: org_id,
+        action: RoleAssignmentAction::Grant,
+        role: role,
+        timestamp: ts,
+        signature: sig,
+    }
+    emit(rbac_events, audit)
+
+    polykit_metering::record_usage(actor_id, "rbac_assign", DimensionValues {
+        executions: 1, hashes: 1, bandwidth: 0,
+        storage: 256, observables: 1, proofs: 1, circuits: 0, mpc_sessions: 0,
+    })
+
+    binding
+}
+
+// --- Revoke a role from a user ---
+circuit revoke_role(
+    actor_id: bytes(16),
+    binding_id: bytes(16),
+    signing_sk: bytes(4896),
+) -> RoleBinding
+    profile poly_framework_sensitive
+    lex esn/global/org/polylabs/oauth/rbac
+    precision C
+    constant_time true
+    observe metrics: [roles_revoked, role_revocation_latency_ns]
+    invariant "binding_exists" { eslite_exists("role_bindings", binding_id) }
+    invariant "binding_active" { eslite_query("role_bindings", binding_id).active == true }
+    property safety "revocation_audited" { audit entry emitted }
+    meters [compute_cycles, memory_bytes]
+    wasm_abi [eslite_query, eslite_insert, stream_emit, now]
+{
+    let ts = now_ns() / 1000000
+    let binding = eslite_query("role_bindings", binding_id)
+
+    let updated = RoleBinding {
+        ..binding,
+        active: false,
+    }
+
+    let sig = mldsa_sign(signing_sk, serialize(updated))
+    eslite_insert("role_bindings", binding_id, updated)
+
+    let audit = RoleAuditEntry {
+        entry_id: bit_slice(sha3_256(concat(binding_id, ts)), 0, 128),
+        actor_id: actor_id,
+        target_user_id: binding.user_id,
+        org_id: binding.org_id,
+        action: RoleAssignmentAction::Revoke,
+        role: binding.role,
+        timestamp: ts,
+        signature: sig,
+    }
+    emit(rbac_events, audit)
+
+    updated
+}
+
+// --- Check if a user has a specific permission ---
+circuit check_permission(
+    user_id: bytes(16),
+    org_id: bytes(16),
+    permission: Permission,
+    resource: string,
+    action: string,
+) -> AccessDecision
+    profile poly_framework_standard
+    lex esn/global/org/polylabs/oauth/rbac
+    precision B
+    observe metrics: [permission_checks, permission_denials, check_latency_ns]
+    monitor "denial_rate" { permission_denials / permission_checks < 0.3 }
+    property safety "expired_bindings_denied" { expired binding never grants access }
+    meters [compute_cycles, memory_bytes]
+    wasm_abi [eslite_query, eslite_scan, stream_emit, now]
+{
+    let ts = now_ns() / 1000000
+    let bindings = eslite_scan("role_bindings", concat(user_id, org_id))
+
+    let mut best_match: option<RoleBinding> = none
+
+    for b in bindings {
+        if !b.active { continue }
+        if b.expires_at <= ts { continue }
+        if b.org_id != org_id { continue }
+
+        let role_map = eslite_query("role_permissions", b.role)
+        if array_contains(role_map.permissions, permission) {
+            best_match = some(b)
+            break
+        }
+    }
+
+    let (allowed, role, binding_id, reason) = match best_match {
+        some(b) => (true, b.role, b.binding_id, "granted"),
+        none => (false, Role::User, zero(16), "no_matching_role"),
+    }
+
+    let decision = AccessDecision {
+        user_id: user_id,
+        resource: resource,
+        action: action,
+        allowed: allowed,
+        matching_role: role,
+        matching_binding_id: binding_id,
+        evaluated_at: ts,
+        reason: reason,
+    }
+
+    emit(access_decision_events, decision)
+    decision
+}
+
+// --- List all roles for a user in an organization ---
+circuit list_user_roles(user_id: bytes(16), org_id: bytes(16)) -> list<RoleBinding>
+    profile poly_framework_standard
+    lex esn/global/org/polylabs/oauth/rbac
+    precision B
+    observe metrics: [role_list_queries]
+    meters [compute_cycles, memory_bytes]
+    wasm_abi [eslite_scan]
+{
+    let ts = now_ns() / 1000000
+    let all_bindings = eslite_scan("role_bindings", concat(user_id, org_id))
+
+    let active_bindings = filter(all_bindings, |b| b.active and b.expires_at > ts)
+    active_bindings
+}
+
+// --- Get effective permissions for a user (union of all roles) ---
+circuit get_effective_permissions(user_id: bytes(16), org_id: bytes(16)) -> list<Permission>
+    profile poly_framework_standard
+    lex esn/global/org/polylabs/oauth/rbac
+    precision B
+    observe metrics: [permission_resolution_queries]
+    meters [compute_cycles, memory_bytes]
+    wasm_abi [eslite_scan, eslite_query]
+{
+    let roles = list_user_roles(user_id, org_id)
+    let mut permissions: set<Permission> = {}
+
+    for binding in roles {
+        let role_map = eslite_query("role_permissions", binding.role)
+        for p in role_map.permissions {
+            permissions.insert(p)
+        }
+    }
+
+    permissions.to_list()
+}
+
+// ── Test / KAT / Fuzz annotations ──────────────────────────────
+
+test golden "assign_user_role" {
+    input {
+        actor_id: hex("01" * 16)
+        user_id: hex("02" * 16)
+        org_id: hex("03" * 16)
+        role: Role::User
+        scope_restriction: ""
+        expires_at: 9999999999
+        signing_sk: hex("BB" * 4896)
+    }
+    assert {
+        len(binding.binding_id) == 16
+        binding.role == Role::User
+        binding.active == true
+    }
+}
+
+test golden "assign_admin_role" {
+    input {
+        actor_id: hex("01" * 16)
+        user_id: hex("02" * 16)
+        org_id: hex("03" * 16)
+        role: Role::Admin
+        scope_restriction: ""
+        expires_at: 9999999999
+        signing_sk: hex("BB" * 4896)
+    }
+    assert {
+        len(binding.binding_id) == 16
+        binding.role == Role::Admin
+        binding.active == true
+    }
+}
+
+test golden "check_permission_granted" {
+    input {
+        user_id: hex("02" * 16)
+        org_id: hex("03" * 16)
+        permission: Permission::ReadProfile
+        resource: "/profile"
+        action: "read"
+    }
+    assert {
+        decision.allowed == true
+        decision.matching_role == Role::User
+    }
+}
+
+test golden "check_permission_denied" {
+    input {
+        user_id: hex("FF" * 16)
+        org_id: hex("03" * 16)
+        permission: Permission::ManageOrg
+        resource: "/org/settings"
+        action: "write"
+    }
+    assert {
+        decision.allowed == false
+        decision.reason == "no_matching_role"
+    }
+}
+
+test golden "revoke_role_deactivates" {
+    input {
+        actor_id: hex("01" * 16)
+        binding_id: hex("AA" * 16)
+        signing_sk: hex("BB" * 4896)
+    }
+    assert {
+        binding.active == false
+    }
+}
+
+fuzz_target "assign_role_fuzz" {
+    inputs {
+        actor_id: bytes(16)
+        user_id: bytes(16)
+        org_id: bytes(16)
+        role: Role
+        scope_restriction: string(0..256)
+        expires_at: u64
+        signing_sk: bytes(4896)
+    }
+    assert {
+        no_panic
+        constant_time true
+    }
+}
+
+fuzz_target "check_permission_fuzz" {
+    inputs {
+        user_id: bytes(16)
+        org_id: bytes(16)
+        permission: Permission
+        resource: string(1..256)
+        action: string(1..64)
+    }
+    assert {
+        no_panic
+        output.allowed == true or output.allowed == false
+    }
+}

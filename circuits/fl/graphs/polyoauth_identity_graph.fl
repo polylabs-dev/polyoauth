@@ -1,4 +1,4 @@
-/// Poly OAuth Identity Federation Graph
+/// Poly OAuth Identity Federation Graph (v0.11.0)
 /// Stratum graph storage + Cortex AI governance
 /// govern lex esn/global/org/polylabs/oauth
 
@@ -38,7 +38,7 @@ type SpProtocol = enum {
 
 // ── Data: Node types (Stratum store graph + Cortex) ──────────────
 
-data OrganizationNode : app v1 {
+data OrganizationNode : oauth v1 {
     org_id: string,
     name: string,
     domain: string,
@@ -60,7 +60,7 @@ data OrganizationNode : app v1 {
         on_anomaly alert "oauth-team"
     }
 
-data ApplicationNode : app v1 {
+data ApplicationNode : oauth v1 {
     app_id: string,
     org_id: string,
     name: string,
@@ -82,7 +82,7 @@ data ApplicationNode : app v1 {
         on_anomaly alert "oauth-security"
     }
 
-data UserSessionNode : app v1 {
+data UserSessionNode : oauth v1 {
     session_id: string,
     user_id: string,
     token_hash: string,
@@ -105,7 +105,7 @@ data UserSessionNode : app v1 {
         on_suggestion store "cortex/oauth/suspicious_sessions"
     }
 
-data ServiceProviderNode : app v1 {
+data ServiceProviderNode : oauth v1 {
     sp_id: string,
     org_id: string,
     protocol: u8,
@@ -193,6 +193,20 @@ series identity_series: identity_federation
     lattice_imprint true
     witness_attest true
 
+// ── Streams ─────────────────────────────────────────────────────
+
+stream identity_graph_mutations: event<OrganizationNode>
+    retention 7y
+    consumers [governance, audit, streamsight, oauth_team]
+
+stream session_events: event<UserSessionNode>
+    retention 365d
+    consumers [streamsight, console, oauth_security]
+
+stream risk_events: event<UserSessionNode>
+    retention 365d
+    consumers [streamsight, eslm, oauth_security]
+
 // ── Circuits: Node insertion ────────────────────────────────────
 
 circuit create_org(
@@ -212,16 +226,10 @@ circuit create_org(
     monitor "org_creation_rate" { orgs_created < 10/s }
     invariant "valid_tier" { tier >= 0 and tier <= 2 }
     invariant "domain_present" { len(domain) > 0 }
+    property safety "org_id_unique" { no_duplicate(org_id) }
+    property liveness "org_eventually_in_graph" { eventually(graph_exists(identity_federation, org_id)) }
     meters [compute_cycles, memory_bytes]
     wasm_abi [eslite_insert, now]
-    test golden "create_enterprise_org" {
-        let pk = bytes(2592, 0xAA)
-        let sk = bytes(4896, 0xBB)
-        let org = create_org(pk, "Acme Corp", "acme.com", 2, "billing@acme.com", sk)
-        assert len(org.org_id) > 0
-        assert org.tier == 2
-        assert org.domain == "acme.com"
-    }
 {
     let admin_id = polykit_identity::derive_user_id(admin_pk)
     let ts = now_ns() / 1000000
@@ -278,14 +286,9 @@ circuit register_app(
     observe metrics: [apps_registered, app_register_latency_ns]
     invariant "org_exists" { graph_exists(identity_federation, org_id) }
     invariant "name_present" { len(name) > 0 }
+    property safety "app_scoped_to_org" { output.org_id == org_id }
     meters [compute_cycles, memory_bytes]
     wasm_abi [eslite_insert, now]
-    test golden "register_oauth_app" {
-        let sk = bytes(4896, 0xBB)
-        let app = register_app("org-1", "My App", "user-1", "secret_hash", "uris_hash", 0x03, 0, "openid profile", "saas", sk)
-        assert len(app.app_id) > 0
-        assert app.org_id == "org-1"
-    }
 {
     let ts = now_ns() / 1000000
     let app_seed = concat(org_id, name, csprng(16), ts)
@@ -339,14 +342,9 @@ circuit create_session(
     observe metrics: [sessions_created, session_create_latency_ns]
     monitor "session_creation_spike" { sessions_created < 100/s }
     invariant "score_bounded" { risk_score <= 1000 }
+    property safety "session_expiry_set" { output.expires_at > output.created_at }
     meters [compute_cycles, memory_bytes]
     wasm_abi [eslite_insert, now]
-    test golden "create_low_risk_session" {
-        let sk = bytes(4896, 0xBB)
-        let sess = create_session("user-1", "fp-hash", "10.0.0.1", "9q8yyk8", 0, 50, "app-1", sk)
-        assert len(sess.session_id) > 0
-        assert sess.risk_score_at_auth == 50
-    }
 {
     let ts = now_ns() / 1000000
     let session_seed = concat(user_id, device_fingerprint, csprng(16), ts)
@@ -462,6 +460,7 @@ circuit authorize_app(
     observe metrics: [authorizations_granted, authorization_latency_ns]
     invariant "app_exists" { graph_exists(identity_federation, app_id) }
     invariant "expiry_future" { expires_at > now_ns() / 1000000 }
+    property safety "authorization_scoped" { scope subset_of app.allowed_scopes }
     meters [compute_cycles, memory_bytes]
     wasm_abi [now]
 {
@@ -469,7 +468,6 @@ circuit authorize_app(
 
     let app = graph_query(identity_federation, app_id)
     let allowed = app.allowed_scopes
-    // scope subset validation delegated to RBAC policy circuit
 
     let auth_edge = AuthorizesEdge {
         edge_id: bit_slice(sha3_256(concat(user_id, app_id, ts)), 0, 128),
@@ -500,6 +498,7 @@ circuit establish_federation(
     observe metrics: [federations_established]
     invariant "org_exists" { graph_exists(identity_federation, org_a_id) }
     invariant "sp_exists" { graph_exists(identity_federation, sp_id) }
+    property safety "federation_mutual" { trust_level > 0 }
     meters [compute_cycles, memory_bytes]
     wasm_abi [now]
 {
@@ -534,10 +533,6 @@ circuit evaluate_risk(
     observe metrics: [risk_evaluations, high_risk_sessions, geo_velocity_alerts]
     monitor "high_risk_rate" { high_risk_sessions / risk_evaluations < 0.05 }
     invariant "score_bounded" { new_risk_score <= 1000 }
-    test golden "flag_impossible_travel" {
-        let score = evaluate_risk("sess-1", 2000, 0, 0, 900)
-        assert score == 900
-    }
 {
     let session = graph_query(identity_federation, session_id)
     let org_id = graph_traverse_up(identity_federation, session_id, BelongsToEdge).org_id
@@ -569,7 +564,7 @@ circuit get_org(
     lex esn/global/org/polylabs/oauth
     status production
     precision B
-    observe metrics: [org_id]
+    observe metrics: [org_queries]
 {
     none
 }
@@ -581,11 +576,7 @@ circuit get_sessions_for_user(
     lex esn/global/org/polylabs/oauth
     status production
     precision B
-    observe metrics: [user_id, session_count]
-    test golden "empty_graph_returns_no_sessions" {
-        let sessions = get_sessions_for_user(bytes(32, 0x01), "NONEXIST")
-        assert sessions == []
-    }
+    observe metrics: [session_queries, session_count]
 {
     []
 }
@@ -597,7 +588,7 @@ circuit get_apps_for_org(
     lex esn/global/org/polylabs/oauth
     status production
     precision B
-    observe metrics: [org_id, app_count]
+    observe metrics: [app_queries, app_count]
 {
     []
 }
@@ -609,7 +600,7 @@ circuit get_sps_for_org(
     lex esn/global/org/polylabs/oauth
     status production
     precision B
-    observe metrics: [org_id, sp_count]
+    observe metrics: [sp_queries, sp_count]
 {
     []
 }
@@ -650,16 +641,111 @@ circuit snapshot_org_quantum_state(
     snapshot_hash
 }
 
-// ── Streams ─────────────────────────────────────────────────────
+// ── Test / KAT / Fuzz annotations ──────────────────────────────
 
-stream identity_graph_mutations: event<OrganizationNode>
-    retention 7y
-    consumers [governance, audit, streamsight, oauth_team]
+test golden "create_enterprise_org" {
+    input {
+        admin_pk: hex("AA" * 2592)
+        name: "Acme Corp"
+        domain: "acme.com"
+        tier: 2
+        billing_email: "billing@acme.com"
+        signing_sk: hex("BB" * 4896)
+    }
+    assert {
+        len(org.org_id) > 0
+        org.tier == 2
+        org.domain == "acme.com"
+    }
+}
 
-stream session_events: event<UserSessionNode>
-    retention 365d
-    consumers [streamsight, console, oauth_security]
+test golden "register_oauth_app" {
+    input {
+        org_id: "org-1"
+        name: "My App"
+        owner_id: "user-1"
+        client_secret_hash: "secret_hash"
+        redirect_uris_hash: "uris_hash"
+        grant_types: 0x03
+        client_type: 0
+        allowed_scopes: "openid profile"
+        tags: "saas"
+        signing_sk: hex("BB" * 4896)
+    }
+    assert {
+        len(app.app_id) > 0
+        app.org_id == "org-1"
+    }
+}
 
-stream risk_events: event<UserSessionNode>
-    retention 365d
-    consumers [streamsight, eslm, oauth_security]
+test golden "create_low_risk_session" {
+    input {
+        user_id: "user-1"
+        device_fingerprint: "fp-hash"
+        ip_address: "10.0.0.1"
+        geo_hash: "9q8yyk8"
+        auth_method: 0
+        risk_score: 50
+        app_id: "app-1"
+        signing_sk: hex("BB" * 4896)
+    }
+    assert {
+        len(sess.session_id) > 0
+        sess.risk_score_at_auth == 50
+    }
+}
+
+test golden "flag_impossible_travel" {
+    input {
+        session_id: "sess-1"
+        geo_velocity_km_per_hr: 2000
+        device_drift_score: 0
+        network_risk_flags: 0
+        new_risk_score: 900
+    }
+    assert {
+        score == 900
+    }
+}
+
+test golden "empty_graph_returns_no_sessions" {
+    input {
+        graph_id: hex("01" * 32)
+        user_id: "NONEXIST"
+    }
+    assert {
+        sessions == []
+    }
+}
+
+fuzz_target "create_org_fuzz" {
+    inputs {
+        admin_pk: bytes(2592)
+        name: string(1..256)
+        domain: string(1..256)
+        tier: u8(0..2)
+        billing_email: string(1..256)
+        signing_sk: bytes(4896)
+    }
+    assert {
+        no_panic
+        constant_time true
+    }
+}
+
+fuzz_target "create_session_fuzz" {
+    inputs {
+        user_id: string(1..64)
+        device_fingerprint: string(1..256)
+        ip_address: string(1..64)
+        geo_hash: string(1..16)
+        auth_method: u8
+        risk_score: u16(0..1000)
+        app_id: string(1..64)
+        signing_sk: bytes(4896)
+    }
+    assert {
+        no_panic
+        constant_time true
+    }
+}

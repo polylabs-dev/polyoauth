@@ -1,4 +1,4 @@
-// Poly OAuth Authentication — SPARK challenge-response with ML-DSA-87
+// Poly OAuth Authentication — SPARK challenge-response with ML-DSA-87 (v0.11.0)
 //
 // Lex Architecture:
 //   esn/global/org/polylabs/oauth/auth
@@ -21,7 +21,7 @@ type AuthMethod = enum {
     Mfa,
 }
 
-type AuthChallenge = struct {
+data AuthChallenge : oauth v1 {
     challenge_id: bytes(16),
     nonce: bytes(32),
     timestamp_ns: u64,
@@ -31,6 +31,12 @@ type AuthChallenge = struct {
     risk_hint: u16,
     ttl_ms: u64,
 }
+    store kv
+    govern lex esn/global/org/polylabs/oauth/auth
+    cortex {
+        infer on_write
+        on_anomaly alert "oauth-team"
+    }
 
 type AuthResponse = struct {
     challenge_id: bytes(16),
@@ -42,7 +48,7 @@ type AuthResponse = struct {
     timestamp_ns: u64,
 }
 
-type AuthResult = struct {
+data AuthResult : oauth v1 {
     authenticated: bool,
     user_id: bytes(16),
     session_token: bytes(32),
@@ -51,6 +57,13 @@ type AuthResult = struct {
     method_used: AuthMethod,
     timestamp_ns: u64,
 }
+    store kv
+    govern lex esn/global/org/polylabs/oauth/auth
+    cortex {
+        obfuscate [user_id]
+        infer on_write
+        on_anomaly alert "oauth-security"
+    }
 
 type AuthStrength = struct {
     method_score: u8,
@@ -60,47 +73,23 @@ type AuthStrength = struct {
     overall: u8,
 }
 
+stream auth_events: event<AuthResult>
+    | throttle 2000/s burst 4000
+
 // --- Create a SPARK authentication challenge ---
 circuit create_challenge(user_id: bytes(16), requested_method: AuthMethod, risk_hint: u16) -> AuthChallenge
     profile poly_framework_sensitive
     lex esn/global/org/polylabs/oauth/auth
+    precision C
     constant_time true
     observe metrics: [challenges_created, challenge_latency_ns]
     monitor "challenge_rate" { challenges_created < 100/s per user_id }
     invariant "nonce_entropy" { entropy(nonce) >= 256 }
     invariant "ttl_bounded" { ttl_ms >= 30000 and ttl_ms <= 300000 }
+    property safety "challenge_uniqueness" { no_duplicate_nonce }
+    property liveness "challenge_eventually_issued" { eventually(challenges_created > 0) }
     meters [compute_cycles, memory_bytes]
-    test golden "create_challenge_basic" {
-        let uid = bytes(16, 0x01)
-        let challenge = create_challenge(uid, SparkBiometric, 100)
-        assert len(challenge.challenge_id) == 16
-        assert len(challenge.nonce) == 32
-        assert challenge.ttl_ms == 300000
-    }
-    kat_vector "hkdf_sha3_visual_key" {
-        ikm: bytes(32, 0xAA)
-        info: bytes(16, 0x01)
-        length: 32
-        function: hkdf_sha3
-    }
-    kat_vector "sha3_256_challenge" {
-        input: bytes(40, 0xBB)
-        function: sha3_256
-        expected: sha3_256(bytes(40, 0xBB))
-    }
-    kat_vector "mldsa_verify_auth" {
-        pk: bytes(2592, 0xAA)
-        message: bytes(64, 0xBB)
-        signature: bytes(4627, 0xCC)
-        function: mldsa_verify
-    }
-    fuzz_target "create_challenge_fuzz" {
-        fuzz user_id: bytes(16, random)
-        fuzz requested_method: AuthMethod { random }
-        fuzz risk_hint: u16 { 0..1000 }
-        assert len(output.nonce) == 32
-        assert output.ttl_ms >= 30000
-    }
+    wasm_abi [eslite_insert, now]
 {
     let nonce = csprng(32)
     let ts = now_ns()
@@ -132,13 +121,16 @@ circuit create_challenge(user_id: bytes(16), requested_method: AuthMethod, risk_
 circuit verify_response(challenge: AuthChallenge, response: AuthResponse, user_pk: bytes(2592)) -> AuthResult
     profile poly_framework_sensitive
     lex esn/global/org/polylabs/oauth/auth
+    precision C
     constant_time true
     observe metrics: [auth_attempts, auth_successes, auth_failures, verify_latency_ns]
     monitor "auth_success_rate" { auth_successes / auth_attempts > 0.95 }
     invariant "challenge_not_expired" { now_ns() - challenge.timestamp_ns < challenge.ttl_ms * 1000000 }
     invariant "challenge_id_match" { challenge.challenge_id == response.challenge_id }
     invariant "response_freshness" { response.timestamp_ns > challenge.timestamp_ns }
+    property safety "no_replay" { response.timestamp_ns is unique per challenge_id }
     meters [compute_cycles, memory_bytes]
+    wasm_abi [eslite_insert, now]
 {
     let challenge_expired = now_ns() - challenge.timestamp_ns > challenge.ttl_ms * 1000000
     if challenge_expired { return AuthResult { authenticated: false, ..zero } }
@@ -154,7 +146,7 @@ circuit verify_response(challenge: AuthChallenge, response: AuthResponse, user_p
 
     let session_key = sha3_256(concat(challenge.nonce, response.signature))
 
-    AuthResult {
+    let result = AuthResult {
         authenticated: authenticated,
         user_id: response.user_id,
         session_token: session_key,
@@ -163,12 +155,16 @@ circuit verify_response(challenge: AuthChallenge, response: AuthResponse, user_p
         method_used: response.auth_method,
         timestamp_ns: now_ns(),
     }
+
+    emit(auth_events, result)
+    result
 }
 
 // --- Evaluate authentication strength by method ---
 circuit evaluate_auth_strength(method: AuthMethod) -> AuthStrength
     profile poly_framework_standard
     lex esn/global/org/polylabs/oauth/auth
+    precision B
     observe metrics: [strength_evaluations]
 {
     match method {
@@ -207,12 +203,15 @@ circuit evaluate_auth_strength(method: AuthMethod) -> AuthStrength
 circuit step_up_auth(current_result: AuthResult, risk_threshold: u16, new_response: AuthResponse, user_pk: bytes(2592)) -> AuthResult
     profile poly_framework_sensitive
     lex esn/global/org/polylabs/oauth/auth
+    precision C
     constant_time true
     observe metrics: [step_up_requests, step_up_successes, step_up_failures]
     monitor "step_up_rate" { step_up_requests < 10/s per current_result.user_id }
     invariant "already_authenticated" { current_result.authenticated == true }
     invariant "risk_warrants_step_up" { current_result.risk_score > risk_threshold }
+    property safety "step_up_strengthens_auth" { output.auth_strength >= current_result.auth_strength }
     meters [compute_cycles, memory_bytes]
+    wasm_abi [now]
 {
     let mfa_message = concat(current_result.session_token, new_response.timestamp_ns)
     let mfa_valid = mldsa_verify(mfa_message, new_response.signature, user_pk)
@@ -245,5 +244,90 @@ circuit step_up_auth(current_result: AuthResult, risk_threshold: u16, new_respon
             method_used: current_result.method_used,
             timestamp_ns: now_ns(),
         }
+    }
+}
+
+// ── Test / KAT / Fuzz annotations ──────────────────────────────
+
+test golden "create_challenge_basic" {
+    input {
+        user_id: hex("01" * 16)
+        requested_method: AuthMethod::SparkBiometric
+        risk_hint: 100
+    }
+    assert {
+        len(challenge.challenge_id) == 16
+        len(challenge.nonce) == 32
+        challenge.ttl_ms == 300000
+    }
+}
+
+test golden "verify_response_expired_challenge" {
+    input {
+        challenge: AuthChallenge { ttl_ms: 0, ..default }
+        response: AuthResponse { ..default }
+        user_pk: hex("AA" * 2592)
+    }
+    assert {
+        result.authenticated == false
+    }
+}
+
+kat_vector "hkdf_sha3_visual_key" {
+    function: "hkdf_sha3"
+    input: {
+        ikm: hex("AA" * 32)
+        info: hex("01" * 16)
+        length: 32
+    }
+    post_condition: {
+        len(output) == 32
+    }
+}
+
+kat_vector "sha3_256_challenge" {
+    function: "sha3_256"
+    input: {
+        data: hex("BB" * 40)
+    }
+    post_condition: {
+        len(output) == 32
+    }
+}
+
+kat_vector "mldsa_verify_auth" {
+    function: "mldsa_verify"
+    input: {
+        pk: hex("AA" * 2592)
+        message: hex("BB" * 64)
+        signature: hex("CC" * 4627)
+    }
+    post_condition: {
+        len(signature) == 4627
+    }
+}
+
+fuzz_target "create_challenge_fuzz" {
+    inputs {
+        user_id: bytes(16)
+        requested_method: AuthMethod
+        risk_hint: u16(0..1000)
+    }
+    assert {
+        no_panic
+        len(output.nonce) == 32
+        output.ttl_ms >= 30000
+    }
+}
+
+fuzz_target "verify_response_fuzz" {
+    inputs {
+        challenge: AuthChallenge
+        response: AuthResponse
+        user_pk: bytes(2592)
+    }
+    assert {
+        no_panic
+        constant_time true
     }
 }

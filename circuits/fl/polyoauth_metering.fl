@@ -1,22 +1,29 @@
-// Poly OAuth Metering -- OAuth operation metering with 8D dimensions
+// Poly OAuth Metering — OAuth operation metering with 8D dimensions (v0.11.0)
 //
 // Lex Architecture:
 //   esn/global/org/polylabs/oauth/metering
 //   Maps: auth [E,O], token [E,O], session [O,S], risk [E,C]
 //   Isolated metering under polylabs.oauth.metering lex namespace.
-//   Billing uses blinded payment tokens -- no cross-product correlation.
+//   Billing uses blinded payment tokens — no cross-product correlation.
 
 import polykit_metering
 
-type OAuthMeteringRecord = struct {
+data OAuthMeteringRecord : oauth v1 {
     user_id: bytes(16),
     org_id: bytes(16),
     operation: string,
     dimensions: DimensionValues,
     timestamp_ms: u64,
 }
+    store kv
+    govern lex esn/global/org/polylabs/oauth/metering
+    cortex {
+        obfuscate [user_id]
+        infer on_write
+        on_anomaly alert "oauth-team"
+    }
 
-type OrgUsageSummary = struct {
+data OrgUsageSummary : oauth v1 {
     org_id: bytes(16),
     auth_executions: u64,
     token_executions: u64,
@@ -27,14 +34,26 @@ type OrgUsageSummary = struct {
     period_start_ms: u64,
     period_end_ms: u64,
 }
+    store kv
+    govern lex esn/global/org/polylabs/oauth/metering
+    cortex {
+        infer on_read
+    }
 
-type UserQuotaStatus = struct {
+data UserQuotaStatus : oauth v1 {
     user_id: bytes(16),
     current_usage: DimensionValues,
     tier_limits: TierLimits,
     violations: [MeteringDimension; 8],
     quota_remaining_pct: u8,
 }
+    store kv
+    govern lex esn/global/org/polylabs/oauth/metering
+    cortex {
+        obfuscate [user_id]
+        infer on_read
+        on_anomaly alert "oauth-billing"
+    }
 
 stream oauth_metering_events: event<OAuthMeteringRecord>
     | throttle 2000/s burst 4000
@@ -43,15 +62,10 @@ stream oauth_metering_events: event<OAuthMeteringRecord>
 circuit meter_auth(user_id: bytes(16), org_id: bytes(16), auth_type: string) -> OAuthMeteringRecord
     profile poly_framework_standard
     lex esn/global/org/polylabs/oauth/metering
+    precision B
     observe metrics: [auth_metered, auth_meter_latency_ns]
     meters [compute_cycles, memory_bytes]
     wasm_abi [eslite_insert, stream_emit, now]
-    test golden "meter_auth_basic" {
-        let uid = bytes(16, 0x01)
-        let oid = bytes(16, 0x02)
-        let record = meter_auth(uid, oid, "spark_biometric")
-        assert record.operation == "spark_biometric"
-    }
 {
     let ts = now_ns() / 1000000
     let dims = DimensionValues {
@@ -83,6 +97,7 @@ circuit meter_auth(user_id: bytes(16), org_id: bytes(16), auth_type: string) -> 
 circuit meter_token(user_id: bytes(16), org_id: bytes(16), token_op: string) -> OAuthMeteringRecord
     profile poly_framework_standard
     lex esn/global/org/polylabs/oauth/metering
+    precision B
     observe metrics: [token_metered, token_meter_latency_ns]
     meters [compute_cycles, memory_bytes]
     wasm_abi [eslite_insert, stream_emit, now]
@@ -126,6 +141,7 @@ circuit meter_token(user_id: bytes(16), org_id: bytes(16), token_op: string) -> 
 circuit meter_session(user_id: bytes(16), org_id: bytes(16), session_op: string) -> OAuthMeteringRecord
     profile poly_framework_standard
     lex esn/global/org/polylabs/oauth/metering
+    precision B
     observe metrics: [session_metered]
     meters [compute_cycles, memory_bytes]
     wasm_abi [eslite_insert, stream_emit, now]
@@ -168,8 +184,10 @@ circuit meter_session(user_id: bytes(16), org_id: bytes(16), session_op: string)
 circuit check_user_quota(user_id: bytes(16), tier: TierLimits) -> UserQuotaStatus
     profile poly_framework_standard
     lex esn/global/org/polylabs/oauth/metering
+    precision B
     observe metrics: [quota_checks, quota_violations]
     monitor "quota_violation_rate" { quota_violations / quota_checks < 0.1 }
+    property safety "quota_bounded" { output.quota_remaining_pct <= 100 }
 {
     let current = polykit_metering::get_usage_summary(user_id)
     let violations = polykit_metering::check_limits(current, tier)
@@ -193,6 +211,7 @@ circuit check_user_quota(user_id: bytes(16), tier: TierLimits) -> UserQuotaStatu
 circuit get_org_usage(org_id: bytes(16), period_start: u64, period_end: u64) -> OrgUsageSummary
     profile poly_framework_standard
     lex esn/global/org/polylabs/oauth/metering
+    precision B
     observe metrics: [org_usage_queries]
     wasm_abi [eslite_query]
 {
@@ -215,5 +234,45 @@ circuit get_org_usage(org_id: bytes(16), period_start: u64, period_end: u64) -> 
         risk_circuits: risk_circ,
         period_start_ms: period_start,
         period_end_ms: period_end,
+    }
+}
+
+// ── Test / KAT / Fuzz annotations ──────────────────────────────
+
+test golden "meter_auth_basic" {
+    input {
+        user_id: hex("01" * 16)
+        org_id: hex("02" * 16)
+        auth_type: "spark_biometric"
+    }
+    assert {
+        record.operation == "spark_biometric"
+        record.dimensions.executions == 1
+        record.dimensions.proofs == 1
+    }
+}
+
+test golden "meter_token_issue" {
+    input {
+        user_id: hex("01" * 16)
+        org_id: hex("02" * 16)
+        token_op: "issue"
+    }
+    assert {
+        record.dimensions.executions == 1
+        record.dimensions.hashes == 2
+        record.dimensions.proofs == 1
+    }
+}
+
+fuzz_target "meter_auth_fuzz" {
+    inputs {
+        user_id: bytes(16)
+        org_id: bytes(16)
+        auth_type: string(1..64)
+    }
+    assert {
+        no_panic
+        output.dimensions.executions >= 0
     }
 }

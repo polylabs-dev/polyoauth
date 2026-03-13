@@ -1,4 +1,4 @@
-/// Poly OAuth Platform Health — Blind relay telemetry for auth sessions
+/// Poly OAuth Platform Health — Blind relay telemetry for auth sessions (v0.11.0)
 ///
 /// Aggregates platform-wide health metrics under zero-linkage privacy:
 ///   - SPARK identity blinded via HKDF("poly-oauth-telemetry-v1")
@@ -17,7 +17,7 @@ import polykit_metering from "../../polykit/circuits/fl/polykit_metering.fl"
 
 // ── Data Declarations with Stratum + Cortex ─────────────────────────
 
-data PlatformMetrics : app v1 {
+data PlatformMetrics : oauth v1 {
     blinded_oauth_id: bytes(32),
     window_start_ms: u64,
     window_end_ms: u64,
@@ -40,7 +40,7 @@ data PlatformMetrics : app v1 {
         on_anomaly alert "oauth-team"
     }
 
-data OAuthHealthSnapshot : app v1 {
+data OAuthHealthSnapshot : oauth v1 {
     period_start_ms: u64,
     period_end_ms: u64,
     total_queries: u64,
@@ -124,21 +124,6 @@ circuit polyoauth_platform_health(
     meters [compute_cycles, memory_bytes, bandwidth_bytes]
     wasm_abi [eslite_insert, stream_emit, now]
     fuzz_target
-    test golden "full_health_pipeline" {
-        let spark = bytes(32, 0xAA)
-        let result = polyoauth_platform_health(spark, 75, 0, 3600000, 200, 60, 500, 400, 100, 50, 10)
-        assert result != none
-    }
-    test golden "rejects_small_cohort" {
-        let spark = bytes(32, 0xBB)
-        let result = polyoauth_platform_health(spark, 20, 0, 3600000, 50, 10, 100, 80, 20, 5, 3)
-        assert result == none
-    }
-    test golden "rejects_short_window" {
-        let spark = bytes(32, 0xCC)
-        let result = polyoauth_platform_health(spark, 100, 0, 1800000, 50, 10, 100, 80, 20, 5, 3)
-        assert result == none
-    }
 {
     let ts = now_ns() / 1000000
 
@@ -236,14 +221,6 @@ circuit polyoauth_anomaly_check(
         infer on_write
         on_anomaly alert "oauth-team"
     }
-    test golden "healthy_state" {
-        let status = polyoauth_anomaly_check(0, 3600000, 1000, 10, 900, 500)
-        assert status == OAuthHealthStatus::Healthy
-    }
-    test golden "critical_on_high_failure" {
-        let status = polyoauth_anomaly_check(0, 3600000, 1000, 500, 200, 50)
-        assert status == OAuthHealthStatus::Critical or status == OAuthHealthStatus::Degraded
-    }
 {
     let failure_rate = if auth_attempts > 0 { (auth_failures * 1000) / auth_attempts } else { 0 }
 
@@ -274,5 +251,92 @@ circuit polyoauth_anomaly_check(
         OAuthHealthStatus::Degraded
     } else {
         OAuthHealthStatus::Healthy
+    }
+}
+
+// ── Test / KAT / Fuzz annotations ──────────────────────────────────
+
+test golden "full_health_pipeline" {
+    input {
+        spark_id: hex("AA" * 32)
+        active_user_count: 75
+        window_start_ms: 0
+        window_end_ms: 3600000
+        platform_queries: 200
+        active_sessions: 60
+        auth_attempts: 500
+        token_grants: 400
+        biometric_verifications: 100
+        federation_requests: 50
+        auth_failures: 10
+    }
+    assert {
+        result != none
+    }
+}
+
+test golden "rejects_small_cohort" {
+    input {
+        spark_id: hex("BB" * 32)
+        active_user_count: 20
+        window_start_ms: 0
+        window_end_ms: 3600000
+        platform_queries: 50
+        active_sessions: 10
+        auth_attempts: 100
+        token_grants: 80
+        biometric_verifications: 20
+        federation_requests: 5
+        auth_failures: 3
+    }
+    assert {
+        result == none
+    }
+}
+
+test golden "rejects_short_window" {
+    input {
+        spark_id: hex("CC" * 32)
+        active_user_count: 100
+        window_start_ms: 0
+        window_end_ms: 1800000
+        platform_queries: 50
+        active_sessions: 10
+        auth_attempts: 100
+        token_grants: 80
+        biometric_verifications: 20
+        federation_requests: 5
+        auth_failures: 3
+    }
+    assert {
+        result == none
+    }
+}
+
+test golden "healthy_state" {
+    input {
+        window_start_ms: 0
+        window_end_ms: 3600000
+        auth_attempts: 1000
+        auth_failures: 10
+        token_grants: 900
+        biometric_verifications: 500
+    }
+    assert {
+        status == OAuthHealthStatus::Healthy
+    }
+}
+
+test golden "critical_on_high_failure" {
+    input {
+        window_start_ms: 0
+        window_end_ms: 3600000
+        auth_attempts: 1000
+        auth_failures: 500
+        token_grants: 200
+        biometric_verifications: 50
+    }
+    assert {
+        status == OAuthHealthStatus::Critical or status == OAuthHealthStatus::Degraded
     }
 }

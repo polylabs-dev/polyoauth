@@ -1,0 +1,473 @@
+// Poly OAuth OIDC — OIDC/SAML protocol bridge for enterprise SSO (v0.11.0)
+//
+// Lex Architecture:
+//   esn/global/org/polylabs/oauth/oidc
+//   Standards-compliant OIDC Discovery, SAML 2.0 assertion bridge, and
+//   token exchange for enterprise SSO integration. All assertions PQ-signed.
+//
+// Protocol support:
+//   - OpenID Connect 1.0 (Authorization Code + PKCE, Implicit, Hybrid)
+//   - SAML 2.0 (SP-initiated, IdP-initiated)
+//   - Token Exchange (RFC 8693) for cross-domain delegation
+
+import polykit_identity
+import polykit_metering
+
+// ── Data declarations ───────────────────────────────────────────
+
+data OidcConfig : oauth v1 {
+    issuer: string,
+    authorization_endpoint: string,
+    token_endpoint: string,
+    userinfo_endpoint: string,
+    jwks_uri: string,
+    registration_endpoint: string,
+    scopes_supported: string,
+    response_types_supported: string,
+    grant_types_supported: string,
+    subject_types_supported: string,
+    id_token_signing_alg: string,
+    token_endpoint_auth_methods: string,
+    claims_supported: string,
+    code_challenge_methods: string,
+    org_id: bytes(16),
+    created_at: u64,
+    updated_at: u64,
+}
+    store kv
+    govern lex esn/global/org/polylabs/oauth/oidc
+    cortex {
+        infer on_write
+        on_anomaly alert "oauth-team"
+    }
+
+data SamlAssertion : oauth v1 {
+    assertion_id: string,
+    issuer: string,
+    subject_name_id: string,
+    subject_format: u8,
+    recipient: string,
+    audience: string,
+    authn_context: string,
+    authn_instant: u64,
+    not_before: u64,
+    not_on_or_after: u64,
+    attributes_hash: bytes(32),
+    signature: bytes(4627),
+    signing_key_id: string,
+    session_index: string,
+}
+    store kv
+    govern lex esn/global/org/polylabs/oauth/oidc
+    cortex {
+        redact [signature]
+        obfuscate [subject_name_id]
+        infer on_write
+        on_anomaly alert "oauth-security"
+    }
+
+data TokenResponse : oauth v1 {
+    access_token_id: string,
+    token_type: string,
+    expires_in: u64,
+    refresh_token_id: string,
+    id_token_hash: bytes(32),
+    scope: string,
+    state: string,
+    issued_at: u64,
+}
+    store kv
+    govern lex esn/global/org/polylabs/oauth/oidc
+    cortex {
+        redact [access_token_id, refresh_token_id]
+        infer on_write
+        on_anomaly alert "oauth-security"
+    }
+
+type OidcFlowState = enum {
+    Initiated,
+    AuthorizationPending,
+    CodeIssued,
+    TokensExchanged,
+    SamlAsserted,
+    Failed,
+    Expired,
+}
+
+type SamlNameIdFormat = enum {
+    Unspecified,
+    Email,
+    Persistent,
+    Transient,
+}
+
+type TokenExchangeType = enum {
+    AccessToAccess,
+    RefreshToAccess,
+    SamlToOidc,
+    OidcToSaml,
+}
+
+state_machine oidc_flow_fsm {
+    initial Initiated
+    persistence wal
+    terminal [Failed, Expired]
+    li_anomaly_detection true
+
+    Initiated -> AuthorizationPending when authorize_request guard client_registered
+    AuthorizationPending -> CodeIssued when user_consented guard scope_valid
+    AuthorizationPending -> Failed when user_denied
+    AuthorizationPending -> Expired when timeout
+    CodeIssued -> TokensExchanged when code_exchanged guard pkce_valid
+    CodeIssued -> Failed when invalid_verifier
+    CodeIssued -> Expired when code_timeout
+    TokensExchanged -> SamlAsserted when saml_bridge_requested guard federation_active
+}
+
+stream oidc_flow_events: event<TokenResponse>
+    | throttle 2000/s burst 4000
+
+stream saml_assertion_events: event<SamlAssertion>
+    retention 7y
+    consumers [governance, audit, streamsight, oauth_security]
+
+// --- Generate OIDC Discovery document ---
+circuit generate_discovery(org_id: bytes(16), base_url: string) -> OidcConfig
+    profile poly_framework_standard
+    lex esn/global/org/polylabs/oauth/oidc
+    precision B
+    observe metrics: [discovery_requests]
+    invariant "base_url_present" { len(base_url) > 0 }
+    meters [compute_cycles, memory_bytes]
+    wasm_abi [eslite_insert, now]
+{
+    let ts = now_ns() / 1000000
+
+    OidcConfig {
+        issuer: base_url,
+        authorization_endpoint: concat(base_url, "/authorize"),
+        token_endpoint: concat(base_url, "/token"),
+        userinfo_endpoint: concat(base_url, "/userinfo"),
+        jwks_uri: concat(base_url, "/.well-known/jwks.json"),
+        registration_endpoint: concat(base_url, "/register"),
+        scopes_supported: "openid profile email address phone",
+        response_types_supported: "code id_token token",
+        grant_types_supported: "authorization_code refresh_token urn:ietf:params:oauth:grant-type:token-exchange",
+        subject_types_supported: "pairwise",
+        id_token_signing_alg: "ML-DSA-87",
+        token_endpoint_auth_methods: "private_key_jwt none",
+        claims_supported: "sub iss aud exp iat auth_time nonce at_hash",
+        code_challenge_methods: "S256",
+        org_id: org_id,
+        created_at: ts,
+        updated_at: ts,
+    }
+}
+
+// --- Initiate OIDC authorization flow ---
+circuit initiate_authorization(
+    client_id: string,
+    redirect_uri_hash: bytes(32),
+    scope: string,
+    state: string,
+    nonce: string,
+    code_challenge: string,
+    code_challenge_method: u8,
+    response_type: u8,
+) -> (string, OidcFlowState)
+    profile poly_framework_sensitive
+    lex esn/global/org/polylabs/oauth/oidc
+    precision C
+    constant_time true
+    observe metrics: [auth_flows_initiated, flow_initiation_latency_ns]
+    monitor "flow_initiation_rate" { auth_flows_initiated < 500/s }
+    invariant "scope_contains_openid" { contains(scope, "openid") }
+    invariant "pkce_required" { len(code_challenge) > 0 }
+    property safety "flow_starts_initiated" { output.1 == OidcFlowState::AuthorizationPending }
+    meters [compute_cycles, memory_bytes]
+    wasm_abi [eslite_insert, now]
+{
+    let ts = now_ns() / 1000000
+    let flow_seed = concat(client_id, state, nonce, csprng(16), ts)
+    let flow_id = sha3_256(flow_seed)
+
+    let flow_data = serialize({
+        flow_id: flow_id,
+        client_id: client_id,
+        redirect_uri_hash: redirect_uri_hash,
+        scope: scope,
+        state: state,
+        nonce: nonce,
+        code_challenge: code_challenge,
+        code_challenge_method: code_challenge_method,
+        response_type: response_type,
+        created_at: ts,
+    })
+
+    eslite_insert("oidc_flows", flow_id, flow_data)
+    transition(oidc_flow_fsm, flow_id, OidcFlowState::AuthorizationPending)
+
+    (flow_id, OidcFlowState::AuthorizationPending)
+}
+
+// --- Exchange authorization code for tokens (PKCE verified) ---
+circuit exchange_code(
+    flow_id: string,
+    code_verifier: string,
+    signing_sk: bytes(4896),
+    signing_key_id: string,
+    encryption_pk: bytes(1568),
+) -> TokenResponse
+    profile poly_framework_sensitive
+    lex esn/global/org/polylabs/oauth/oidc
+    precision C
+    constant_time true
+    observe metrics: [code_exchanges, code_exchange_failures, exchange_latency_ns]
+    monitor "code_exchange_failure_rate" { code_exchange_failures / code_exchanges < 0.05 }
+    invariant "flow_exists" { eslite_exists("oidc_flows", flow_id) }
+    property safety "code_single_use" { flow marked consumed after exchange }
+    property safety "pkce_verified" { sha3_256(code_verifier) matches stored challenge }
+    meters [compute_cycles, memory_bytes]
+    wasm_abi [eslite_query, eslite_insert, stream_emit, now]
+{
+    let flow = eslite_query("oidc_flows", flow_id)
+    let ts = now_ns() / 1000000
+
+    let challenge_hash = sha3_256(code_verifier)
+    if challenge_hash != flow.code_challenge { abort "invalid_pkce_verifier" }
+
+    let access_token_id = sha3_256(concat(flow_id, "access", csprng(16), ts))
+    let refresh_token_id = sha3_256(concat(flow_id, "refresh", csprng(16), ts))
+    let id_token_payload = serialize({
+        iss: flow.issuer, sub: flow.subject_id, aud: flow.client_id,
+        exp: ts + 3600000, iat: ts, nonce: flow.nonce,
+    })
+    let id_token_hash = sha3_256(id_token_payload)
+
+    let response = TokenResponse {
+        access_token_id: access_token_id,
+        token_type: "Bearer",
+        expires_in: 3600,
+        refresh_token_id: refresh_token_id,
+        id_token_hash: id_token_hash,
+        scope: flow.scope,
+        state: flow.state,
+        issued_at: ts,
+    }
+
+    transition(oidc_flow_fsm, flow_id, OidcFlowState::TokensExchanged)
+    emit(oidc_flow_events, response)
+    response
+}
+
+// --- Generate SAML 2.0 assertion from authenticated session ---
+circuit generate_saml_assertion(
+    subject_name_id: string,
+    subject_format: u8,
+    recipient: string,
+    audience: string,
+    attributes_hash: bytes(32),
+    session_index: string,
+    ttl_ms: u64,
+    signing_sk: bytes(4896),
+    signing_key_id: string,
+) -> SamlAssertion
+    profile poly_framework_sensitive
+    lex esn/global/org/polylabs/oauth/oidc
+    precision C
+    constant_time true
+    observe metrics: [saml_assertions_issued, saml_assertion_latency_ns]
+    monitor "saml_assertion_rate" { saml_assertions_issued < 200/s }
+    invariant "ttl_bounded" { ttl_ms > 0 and ttl_ms <= 86400000 }
+    invariant "recipient_present" { len(recipient) > 0 }
+    property safety "assertion_time_bounded" { not_on_or_after > not_before }
+    meters [compute_cycles, memory_bytes]
+    wasm_abi [eslite_insert, stream_emit, now]
+{
+    let ts = now_ns() / 1000000
+    let assertion_seed = concat(subject_name_id, recipient, session_index, csprng(16), ts)
+    let assertion_id = sha3_256(assertion_seed)
+
+    let not_before = ts
+    let not_on_or_after = ts + ttl_ms
+
+    let sig_payload = concat(assertion_id, subject_name_id, recipient, audience,
+                             not_before, not_on_or_after, attributes_hash)
+    let signature = mldsa_sign(signing_sk, sig_payload)
+
+    let assertion = SamlAssertion {
+        assertion_id: assertion_id,
+        issuer: "urn:polylabs:oauth",
+        subject_name_id: subject_name_id,
+        subject_format: subject_format,
+        recipient: recipient,
+        audience: audience,
+        authn_context: "urn:oasis:names:tc:SAML:2.0:ac:classes:PasswordProtectedTransport",
+        authn_instant: ts,
+        not_before: not_before,
+        not_on_or_after: not_on_or_after,
+        attributes_hash: attributes_hash,
+        signature: signature,
+        signing_key_id: signing_key_id,
+        session_index: session_index,
+    }
+
+    emit(saml_assertion_events, assertion)
+    assertion
+}
+
+// --- Validate incoming SAML assertion (SP-initiated flow) ---
+circuit validate_saml_assertion(
+    assertion: SamlAssertion,
+    idp_pk: bytes(2592),
+    expected_audience: string,
+) -> bool
+    profile poly_framework_sensitive
+    lex esn/global/org/polylabs/oauth/oidc
+    precision C
+    constant_time true
+    observe metrics: [saml_validations, saml_validation_failures]
+    monitor "saml_validation_failure_rate" { saml_validation_failures / saml_validations < 0.05 }
+    property safety "expired_assertion_rejected" { now > not_on_or_after implies result == false }
+    meters [compute_cycles, memory_bytes]
+{
+    let ts = now_ns() / 1000000
+
+    if ts < assertion.not_before { return false }
+    if ts >= assertion.not_on_or_after { return false }
+    if assertion.audience != expected_audience { return false }
+
+    let sig_payload = concat(assertion.assertion_id, assertion.subject_name_id,
+                             assertion.recipient, assertion.audience,
+                             assertion.not_before, assertion.not_on_or_after,
+                             assertion.attributes_hash)
+    let sig_valid = mldsa_verify(sig_payload, assertion.signature, idp_pk)
+
+    sig_valid
+}
+
+// --- Token exchange (RFC 8693) for cross-domain delegation ---
+circuit token_exchange(
+    subject_token_id: string,
+    exchange_type: TokenExchangeType,
+    target_audience: string,
+    scope: string,
+    issuer_pk: bytes(2592),
+    signing_sk: bytes(4896),
+    signing_key_id: string,
+    encryption_pk: bytes(1568),
+) -> TokenResponse
+    profile poly_framework_sensitive
+    lex esn/global/org/polylabs/oauth/oidc
+    precision C
+    constant_time true
+    observe metrics: [token_exchanges, exchange_failures, exchange_latency_ns]
+    monitor "exchange_rate" { token_exchanges < 200/s }
+    invariant "target_audience_present" { len(target_audience) > 0 }
+    invariant "scope_present" { len(scope) > 0 }
+    property safety "exchange_preserves_subject" { output subject matches input subject }
+    meters [compute_cycles, memory_bytes]
+    wasm_abi [eslite_query, eslite_insert, stream_emit, now]
+{
+    let ts = now_ns() / 1000000
+
+    let new_access_id = sha3_256(concat(subject_token_id, target_audience, csprng(16), ts))
+
+    let response = TokenResponse {
+        access_token_id: new_access_id,
+        token_type: "Bearer",
+        expires_in: 3600,
+        refresh_token_id: "",
+        id_token_hash: zero(32),
+        scope: scope,
+        state: "",
+        issued_at: ts,
+    }
+
+    polykit_metering::record_usage(target_audience, "token_exchange", DimensionValues {
+        executions: 1, hashes: 2, bandwidth: 0,
+        storage: 0, observables: 1, proofs: 1, circuits: 0, mpc_sessions: 0,
+    })
+
+    emit(oidc_flow_events, response)
+    response
+}
+
+// ── Test / KAT / Fuzz annotations ──────────────────────────────
+
+test golden "generate_discovery_basic" {
+    input {
+        org_id: hex("01" * 16)
+        base_url: "https://auth.example.com"
+    }
+    assert {
+        config.issuer == "https://auth.example.com"
+        config.id_token_signing_alg == "ML-DSA-87"
+        contains(config.scopes_supported, "openid")
+    }
+}
+
+test golden "initiate_auth_flow" {
+    input {
+        client_id: "client-1"
+        redirect_uri_hash: hex("AA" * 32)
+        scope: "openid profile"
+        state: "xyz"
+        nonce: "abc"
+        code_challenge: "challenge123"
+        code_challenge_method: 0
+        response_type: 0
+    }
+    assert {
+        len(flow_id) > 0
+        state == OidcFlowState::AuthorizationPending
+    }
+}
+
+test golden "generate_saml_assertion_basic" {
+    input {
+        subject_name_id: "user@acme.com"
+        subject_format: 1
+        recipient: "https://sp.acme.com/sso"
+        audience: "https://sp.acme.com"
+        attributes_hash: hex("AA" * 32)
+        session_index: "sess-1"
+        ttl_ms: 300000
+        signing_sk: hex("BB" * 4896)
+        signing_key_id: "key-1"
+    }
+    assert {
+        len(assertion.assertion_id) > 0
+        len(assertion.signature) == 4627
+        assertion.not_on_or_after > assertion.not_before
+    }
+}
+
+fuzz_target "oidc_flow_fuzz" {
+    inputs {
+        client_id: string(1..256)
+        redirect_uri_hash: bytes(32)
+        scope: string(1..256)
+        state: string(1..64)
+        nonce: string(1..64)
+        code_challenge: string(1..256)
+        code_challenge_method: u8(0..1)
+        response_type: u8(0..2)
+    }
+    assert {
+        no_panic
+        constant_time true
+    }
+}
+
+fuzz_target "saml_assertion_fuzz" {
+    inputs {
+        assertion: SamlAssertion
+        idp_pk: bytes(2592)
+        expected_audience: string(1..256)
+    }
+    assert {
+        no_panic
+        constant_time true
+    }
+}
