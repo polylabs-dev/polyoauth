@@ -1,4 +1,4 @@
-// Poly OAuth Authentication — SPARK challenge-response with ML-DSA-87 (v0.11.0)
+// Poly OAuth Authentication — SPARK challenge-response with ML-DSA-87 (v0.12.0)
 //
 // Lex Architecture:
 //   esn/global/org/polylabs/oauth/auth
@@ -32,7 +32,7 @@ data AuthChallenge : oauth v1 {
     ttl_ms: u64,
 }
     store kv
-    govern lex esn/global/org/polylabs/oauth/auth
+    govern lex global/org/polylabs/oauth/auth
     cortex {
         infer on_write
         on_anomaly alert "oauth-team"
@@ -58,7 +58,7 @@ data AuthResult : oauth v1 {
     timestamp_ns: u64,
 }
     store kv
-    govern lex esn/global/org/polylabs/oauth/auth
+    govern lex global/org/polylabs/oauth/auth
     cortex {
         obfuscate [user_id]
         infer on_write
@@ -79,10 +79,10 @@ stream auth_events: event<AuthResult>
 // --- Create a SPARK authentication challenge ---
 circuit create_challenge(user_id: bytes(16), requested_method: AuthMethod, risk_hint: u16) -> AuthChallenge
     profile poly_framework_sensitive
-    lex esn/global/org/polylabs/oauth/auth
-    precision C
+    lex global/org/polylabs/oauth/auth
+    @precision C
     constant_time true
-    observe metrics: [challenges_created, challenge_latency_ns]
+    @observe metrics: [challenges_created, challenge_latency_ns]
     monitor "challenge_rate" { challenges_created < 100/s per user_id }
     invariant "nonce_entropy" { entropy(nonce) >= 256 }
     invariant "ttl_bounded" { ttl_ms >= 30000 and ttl_ms <= 300000 }
@@ -120,10 +120,10 @@ circuit create_challenge(user_id: bytes(16), requested_method: AuthMethod, risk_
 // --- Verify a SPARK challenge-response ---
 circuit verify_response(challenge: AuthChallenge, response: AuthResponse, user_pk: bytes(2592)) -> AuthResult
     profile poly_framework_sensitive
-    lex esn/global/org/polylabs/oauth/auth
-    precision C
+    lex global/org/polylabs/oauth/auth
+    @precision C
     constant_time true
-    observe metrics: [auth_attempts, auth_successes, auth_failures, verify_latency_ns]
+    @observe metrics: [auth_attempts, auth_successes, auth_failures, verify_latency_ns]
     monitor "auth_success_rate" { auth_successes / auth_attempts > 0.95 }
     invariant "challenge_not_expired" { now_ns() - challenge.timestamp_ns < challenge.ttl_ms * 1000000 }
     invariant "challenge_id_match" { challenge.challenge_id == response.challenge_id }
@@ -163,9 +163,9 @@ circuit verify_response(challenge: AuthChallenge, response: AuthResponse, user_p
 // --- Evaluate authentication strength by method ---
 circuit evaluate_auth_strength(method: AuthMethod) -> AuthStrength
     profile poly_framework_standard
-    lex esn/global/org/polylabs/oauth/auth
-    precision B
-    observe metrics: [strength_evaluations]
+    lex global/org/polylabs/oauth/auth
+    @precision B
+    @observe metrics: [strength_evaluations]
 {
     match method {
         AuthMethod::SparkBiometric => AuthStrength {
@@ -202,10 +202,10 @@ circuit evaluate_auth_strength(method: AuthMethod) -> AuthStrength
 // --- Step-up authentication when risk exceeds threshold ---
 circuit step_up_auth(current_result: AuthResult, risk_threshold: u16, new_response: AuthResponse, user_pk: bytes(2592)) -> AuthResult
     profile poly_framework_sensitive
-    lex esn/global/org/polylabs/oauth/auth
-    precision C
+    lex global/org/polylabs/oauth/auth
+    @precision C
     constant_time true
-    observe metrics: [step_up_requests, step_up_successes, step_up_failures]
+    @observe metrics: [step_up_requests, step_up_successes, step_up_failures]
     monitor "step_up_rate" { step_up_requests < 10/s per current_result.user_id }
     invariant "already_authenticated" { current_result.authenticated == true }
     invariant "risk_warrants_step_up" { current_result.risk_score > risk_threshold }
@@ -273,7 +273,7 @@ test golden "verify_response_expired_challenge" {
     }
 }
 
-kat_vector "hkdf_sha3_visual_key" {
+golden_test "hkdf_sha3_visual_key" {
     function: "hkdf_sha3"
     input: {
         ikm: hex("AA" * 32)
@@ -285,7 +285,7 @@ kat_vector "hkdf_sha3_visual_key" {
     }
 }
 
-kat_vector "sha3_256_challenge" {
+golden_test "sha3_256_challenge" {
     function: "sha3_256"
     input: {
         data: hex("BB" * 40)
@@ -295,7 +295,7 @@ kat_vector "sha3_256_challenge" {
     }
 }
 
-kat_vector "mldsa_verify_auth" {
+golden_test "mldsa_verify_auth" {
     function: "mldsa_verify"
     input: {
         pk: hex("AA" * 2592)

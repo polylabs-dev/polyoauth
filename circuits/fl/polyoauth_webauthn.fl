@@ -1,4 +1,4 @@
-// Poly OAuth WebAuthn — FIDO2/WebAuthn registration and assertion flows (v0.11.0)
+// Poly OAuth WebAuthn — FIDO2/WebAuthn registration and assertion flows (v0.12.0)
 //
 // Lex Architecture:
 //   esn/global/org/polylabs/oauth/webauthn
@@ -32,7 +32,7 @@ data WebAuthnCredential : oauth v1 {
     is_backed_up: bool,
 }
     store kv
-    govern lex esn/global/org/polylabs/oauth/webauthn
+    govern lex global/org/polylabs/oauth/webauthn
     cortex {
         redact [public_key]
         obfuscate [user_id]
@@ -55,7 +55,7 @@ data AttestationObject : oauth v1 {
     challenge: bytes(32),
 }
     store kv
-    govern lex esn/global/org/polylabs/oauth/webauthn
+    govern lex global/org/polylabs/oauth/webauthn
     cortex {
         redact [att_stmt_signature, credential_public_key]
         infer on_write
@@ -75,7 +75,7 @@ data AssertionResponse : oauth v1 {
     origin_hash: bytes(32),
 }
     store kv
-    govern lex esn/global/org/polylabs/oauth/webauthn
+    govern lex global/org/polylabs/oauth/webauthn
     cortex {
         redact [signature]
         obfuscate [user_handle]
@@ -129,10 +129,10 @@ circuit create_registration_challenge(
     authenticator_selection: u8,
 ) -> (bytes(32), u64)
     profile poly_framework_sensitive
-    lex esn/global/org/polylabs/oauth/webauthn
-    precision C
+    lex global/org/polylabs/oauth/webauthn
+    @precision C
     constant_time true
-    observe metrics: [registration_challenges_created, challenge_create_latency_ns]
+    @observe metrics: [registration_challenges_created, challenge_create_latency_ns]
     monitor "registration_challenge_rate" { registration_challenges_created < 100/s per user_id }
     invariant "rp_id_present" { len(rp_id) > 0 }
     invariant "user_id_present" { len(user_id) == 16 }
@@ -171,10 +171,10 @@ circuit process_attestation(
     expected_origin_hash: bytes(32),
 ) -> WebAuthnCredential
     profile poly_framework_sensitive
-    lex esn/global/org/polylabs/oauth/webauthn
-    precision C
+    lex global/org/polylabs/oauth/webauthn
+    @precision C
     constant_time true
-    observe metrics: [attestations_processed, attestation_failures, attestation_latency_ns]
+    @observe metrics: [attestations_processed, attestation_failures, attestation_latency_ns]
     monitor "attestation_failure_rate" { attestation_failures / attestations_processed < 0.1 }
     invariant "challenge_match" { attestation.challenge == expected_challenge }
     invariant "rp_id_match" { attestation.rp_id_hash == sha3_256(expected_rp_id) }
@@ -233,10 +233,10 @@ circuit create_assertion_challenge(
     user_verification: u8,
 ) -> (bytes(32), u64)
     profile poly_framework_sensitive
-    lex esn/global/org/polylabs/oauth/webauthn
-    precision C
+    lex global/org/polylabs/oauth/webauthn
+    @precision C
     constant_time true
-    observe metrics: [assertion_challenges_created]
+    @observe metrics: [assertion_challenges_created]
     monitor "assertion_challenge_rate" { assertion_challenges_created < 500/s }
     invariant "rp_id_present" { len(rp_id) > 0 }
     meters [compute_cycles, memory_bytes]
@@ -268,10 +268,10 @@ circuit verify_assertion(
     expected_origin_hash: bytes(32),
 ) -> (bool, bytes(16))
     profile poly_framework_sensitive
-    lex esn/global/org/polylabs/oauth/webauthn
-    precision C
+    lex global/org/polylabs/oauth/webauthn
+    @precision C
     constant_time true
-    observe metrics: [assertions_verified, assertion_failures, assertion_latency_ns]
+    @observe metrics: [assertions_verified, assertion_failures, assertion_latency_ns]
     monitor "assertion_failure_rate" { assertion_failures / assertions_verified < 0.05 }
     invariant "challenge_match" { response.challenge == expected_challenge }
     invariant "rp_id_match" { response.rp_id_hash == sha3_256(expected_rp_id) }
@@ -326,10 +326,10 @@ circuit bridge_to_spark(
     signing_sk: bytes(4896),
 ) -> bool
     profile poly_framework_sensitive
-    lex esn/global/org/polylabs/oauth/webauthn
-    precision C
+    lex global/org/polylabs/oauth/webauthn
+    @precision C
     constant_time true
-    observe metrics: [spark_bridges_created]
+    @observe metrics: [spark_bridges_created]
     invariant "credential_exists" { eslite_exists("webauthn_credentials", credential_id) }
     invariant "spark_id_present" { len(spark_id) == 32 }
     meters [compute_cycles, memory_bytes]
@@ -390,7 +390,7 @@ test golden "verify_assertion_basic" {
     }
 }
 
-kat_vector "mldsa87_webauthn_attestation" {
+golden_test "mldsa87_webauthn_attestation" {
     function: "mldsa_verify"
     input: {
         pk: hex("AA" * 2592)

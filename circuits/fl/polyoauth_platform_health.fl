@@ -1,4 +1,4 @@
-/// Poly OAuth Platform Health — Blind relay telemetry for auth sessions (v0.11.0)
+/// Poly OAuth Platform Health — Blind relay telemetry for auth sessions (v0.12.0)
 ///
 /// Aggregates platform-wide health metrics under zero-linkage privacy:
 ///   - SPARK identity blinded via HKDF("poly-oauth-telemetry-v1")
@@ -10,7 +10,7 @@
 ///   esn/global/org/polylabs/oauth
 ///     └── sub_lex auth_session fan_in  ← per-session health; aggregates fan up
 ///
-/// govern lex esn/global/org/polylabs/oauth
+/// govern lex global/org/polylabs/oauth
 
 import polykit_blind_telemetry from "../../polykit/circuits/fl/polykit_blind_telemetry.fl"
 import polykit_metering from "../../polykit/circuits/fl/polykit_metering.fl"
@@ -33,7 +33,7 @@ data PlatformMetrics : oauth v1 {
     collected_at: u64,
 }
     store kv
-    govern lex esn/global/org/polylabs/oauth
+    govern lex global/org/polylabs/oauth
     cortex {
         obfuscate [blinded_oauth_id]
         infer on_write
@@ -55,7 +55,7 @@ data OAuthHealthSnapshot : oauth v1 {
     baseline_sessions: u64,
 }
     store kv
-    govern lex esn/global/org/polylabs/oauth
+    govern lex global/org/polylabs/oauth
     cortex {
         infer on_read
     }
@@ -70,12 +70,12 @@ type OAuthHealthStatus = enum {
 
 stream oauth_health_events: event<PlatformMetrics>
     retention 365d
-    consumers [streamsight, audit_trail, governance]
+    consumers [observe, audit_trail, governance]
     classify blinded_oauth_id: METADATA, cohort_size: METADATA
 
 stream oauth_anomaly_events: event<OAuthHealthSnapshot>
     retention forever
-    consumers [streamsight, governance, alerting]
+    consumers [observe, governance, alerting]
 
 // ── Series ──────────────────────────────────────────────────────────
 
@@ -100,19 +100,19 @@ circuit polyoauth_platform_health(
     auth_failures: u64,
 ) -> option<PlatformMetrics>
     profile poly_framework_sensitive
-    lex esn/global/org/polylabs/oauth {
+    lex global/org/polylabs/oauth {
         governance hierarchical
         audit_trail true
         sub_lex auth_session fan_in
     }
-    status production
-    precision C
-    streamsight true
-    povc true
+    @status production
+    @precision C
+    @observe true
+    @attested true
     constant_time true
-    esz_emit "verify/polyoauth_platform_health.esz"
+    @serialize "verify/polyoauth_platform_health.esz"
     li_feed full_escir true, optimized_ir true, optimization_metadata true
-    observe metrics: [health_snapshots_emitted, health_snapshots_rejected, oauth_anomalies_detected]
+    @observe metrics: [health_snapshots_emitted, health_snapshots_rejected, oauth_anomalies_detected]
     monitor "auth_failure_rate" { auth_failures / auth_attempts < 0.1 }
     monitor "health_emission_rate" { health_snapshots_emitted < 60/hr }
     invariant "cohort_enforced" { active_user_count >= 50 }
@@ -203,14 +203,14 @@ circuit polyoauth_anomaly_check(
     biometric_verifications: u64,
 ) -> OAuthHealthStatus
     profile poly_framework_standard
-    lex esn/global/org/polylabs/oauth {
+    lex global/org/polylabs/oauth {
         sub_lex auth_session fan_in
     }
-    status production
-    precision B
-    streamsight true
-    povc true
-    observe metrics: [anomaly_checks, anomaly_triggers, degraded_periods, critical_periods]
+    @status production
+    @precision B
+    @observe true
+    @attested true
+    @observe metrics: [anomaly_checks, anomaly_triggers, degraded_periods, critical_periods]
     monitor "anomaly_trigger_rate" { anomaly_triggers < 100/hr }
     invariant "valid_window" { window_end_ms > window_start_ms }
     property safety "no_false_critical" { critical implies anomaly > 0.9 }
@@ -323,7 +323,7 @@ test golden "healthy_state" {
         biometric_verifications: 500
     }
     assert {
-        status == OAuthHealthStatus::Healthy
+        @status == OAuthHealthStatus::Healthy
     }
 }
 
@@ -337,6 +337,6 @@ test golden "critical_on_high_failure" {
         biometric_verifications: 50
     }
     assert {
-        status == OAuthHealthStatus::Critical or status == OAuthHealthStatus::Degraded
+        @status == OAuthHealthStatus::Critical or status == OAuthHealthStatus::Degraded
     }
 }

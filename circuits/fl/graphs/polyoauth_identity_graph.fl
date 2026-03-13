@@ -1,6 +1,6 @@
-/// Poly OAuth Identity Federation Graph (v0.11.0)
+/// Poly OAuth Identity Federation Graph (v0.12.0)
 /// Stratum graph storage + Cortex AI governance
-/// govern lex esn/global/org/polylabs/oauth
+/// govern lex global/org/polylabs/oauth
 
 import polykit_identity
 import polykit_metering
@@ -53,7 +53,7 @@ data OrganizationNode : oauth v1 {
     updated_at: u64,
 }
     store graph
-    govern lex esn/global/org/polylabs/oauth
+    govern lex global/org/polylabs/oauth
     cortex {
         obfuscate [admin_id, billing_email]
         infer on_write
@@ -74,7 +74,7 @@ data ApplicationNode : oauth v1 {
     created_at: u64,
 }
     store graph
-    govern lex esn/global/org/polylabs/oauth
+    govern lex global/org/polylabs/oauth
     cortex {
         redact [client_secret_hash]
         obfuscate [owner_id]
@@ -96,7 +96,7 @@ data UserSessionNode : oauth v1 {
     expires_at: u64,
 }
     store graph
-    govern lex esn/global/org/polylabs/oauth
+    govern lex global/org/polylabs/oauth
     cortex {
         redact [token_hash, device_fingerprint]
         obfuscate [user_id, ip_address]
@@ -116,7 +116,7 @@ data ServiceProviderNode : oauth v1 {
     created_at: u64,
 }
     store graph
-    govern lex esn/global/org/polylabs/oauth
+    govern lex global/org/polylabs/oauth
     cortex {
         obfuscate [admin_contact]
         infer on_read
@@ -182,7 +182,7 @@ graph identity_federation {
 
     ai_feed auth_anomaly
 
-    observe identity_federation: [session_count, active_users, risk_score] threshold: {
+    @observe identity_federation: [session_count, active_users, risk_score] threshold: {
         anomaly_score 0.90
         baseline_window 120
     }
@@ -197,15 +197,15 @@ series identity_series: identity_federation
 
 stream identity_graph_mutations: event<OrganizationNode>
     retention 7y
-    consumers [governance, audit, streamsight, oauth_team]
+    consumers [governance, audit, observe, oauth_team]
 
 stream session_events: event<UserSessionNode>
     retention 365d
-    consumers [streamsight, console, oauth_security]
+    consumers [observe, console, oauth_security]
 
 stream risk_events: event<UserSessionNode>
     retention 365d
-    consumers [streamsight, eslm, oauth_security]
+    consumers [observe, eslm, oauth_security]
 
 // ── Circuits: Node insertion ────────────────────────────────────
 
@@ -217,12 +217,12 @@ circuit create_org(
     billing_email: string,
     signing_sk: bytes(4896),
 ) -> OrganizationNode
-    lex esn/global/org/polylabs/oauth
-    status production
-    precision C
-    povc true
+    lex global/org/polylabs/oauth
+    @status production
+    @precision C
+    @attested true
     constant_time true
-    observe metrics: [orgs_created, org_create_latency_ns]
+    @observe metrics: [orgs_created, org_create_latency_ns]
     monitor "org_creation_rate" { orgs_created < 10/s }
     invariant "valid_tier" { tier >= 0 and tier <= 2 }
     invariant "domain_present" { len(domain) > 0 }
@@ -279,11 +279,11 @@ circuit register_app(
     tags: string,
     signing_sk: bytes(4896),
 ) -> ApplicationNode
-    lex esn/global/org/polylabs/oauth
-    status production
-    precision C
-    povc true
-    observe metrics: [apps_registered, app_register_latency_ns]
+    lex global/org/polylabs/oauth
+    @status production
+    @precision C
+    @attested true
+    @observe metrics: [apps_registered, app_register_latency_ns]
     invariant "org_exists" { graph_exists(identity_federation, org_id) }
     invariant "name_present" { len(name) > 0 }
     property safety "app_scoped_to_org" { output.org_id == org_id }
@@ -334,12 +334,12 @@ circuit create_session(
     app_id: string,
     signing_sk: bytes(4896),
 ) -> UserSessionNode
-    lex esn/global/org/polylabs/oauth
-    status production
-    precision C
-    povc true
+    lex global/org/polylabs/oauth
+    @status production
+    @precision C
+    @attested true
     constant_time true
-    observe metrics: [sessions_created, session_create_latency_ns]
+    @observe metrics: [sessions_created, session_create_latency_ns]
     monitor "session_creation_spike" { sessions_created < 100/s }
     invariant "score_bounded" { risk_score <= 1000 }
     property safety "session_expiry_set" { output.expires_at > output.created_at }
@@ -402,11 +402,11 @@ circuit register_sp(
     name_id_format: u8,
     signing_sk: bytes(4896),
 ) -> ServiceProviderNode
-    lex esn/global/org/polylabs/oauth
-    status production
-    precision C
-    povc true
-    observe metrics: [sps_registered, sp_register_latency_ns]
+    lex global/org/polylabs/oauth
+    @status production
+    @precision C
+    @attested true
+    @observe metrics: [sps_registered, sp_register_latency_ns]
     invariant "org_exists" { graph_exists(identity_federation, org_id) }
     invariant "valid_protocol" { protocol <= 3 }
     meters [compute_cycles, memory_bytes]
@@ -453,11 +453,11 @@ circuit authorize_app(
     expires_at: u64,
     signing_sk: bytes(4896),
 ) -> AuthorizesEdge
-    lex esn/global/org/polylabs/oauth
-    status production
-    precision C
-    povc true
-    observe metrics: [authorizations_granted, authorization_latency_ns]
+    lex global/org/polylabs/oauth
+    @status production
+    @precision C
+    @attested true
+    @observe metrics: [authorizations_granted, authorization_latency_ns]
     invariant "app_exists" { graph_exists(identity_federation, app_id) }
     invariant "expiry_future" { expires_at > now_ns() / 1000000 }
     property safety "authorization_scoped" { scope subset_of app.allowed_scopes }
@@ -491,11 +491,11 @@ circuit establish_federation(
     metadata_exchange_hash: string,
     signing_sk: bytes(4896),
 ) -> FederatesWithEdge
-    lex esn/global/org/polylabs/oauth
-    status production
-    precision C
-    povc true
-    observe metrics: [federations_established]
+    lex global/org/polylabs/oauth
+    @status production
+    @precision C
+    @attested true
+    @observe metrics: [federations_established]
     invariant "org_exists" { graph_exists(identity_federation, org_a_id) }
     invariant "sp_exists" { graph_exists(identity_federation, sp_id) }
     property safety "federation_mutual" { trust_level > 0 }
@@ -526,11 +526,11 @@ circuit evaluate_risk(
     network_risk_flags: u16,
     new_risk_score: u16,
 ) -> u16
-    lex esn/global/org/polylabs/oauth
-    status production
-    precision B
-    povc true
-    observe metrics: [risk_evaluations, high_risk_sessions, geo_velocity_alerts]
+    lex global/org/polylabs/oauth
+    @status production
+    @precision B
+    @attested true
+    @observe metrics: [risk_evaluations, high_risk_sessions, geo_velocity_alerts]
     monitor "high_risk_rate" { high_risk_sessions / risk_evaluations < 0.05 }
     invariant "score_bounded" { new_risk_score <= 1000 }
 {
@@ -561,10 +561,10 @@ circuit get_org(
     graph_id: bytes(32),
     org_id: string,
 ) -> option<OrganizationNode>
-    lex esn/global/org/polylabs/oauth
-    status production
-    precision B
-    observe metrics: [org_queries]
+    lex global/org/polylabs/oauth
+    @status production
+    @precision B
+    @observe metrics: [org_queries]
 {
     none
 }
@@ -573,10 +573,10 @@ circuit get_sessions_for_user(
     graph_id: bytes(32),
     user_id: string,
 ) -> list<UserSessionNode>
-    lex esn/global/org/polylabs/oauth
-    status production
-    precision B
-    observe metrics: [session_queries, session_count]
+    lex global/org/polylabs/oauth
+    @status production
+    @precision B
+    @observe metrics: [session_queries, session_count]
 {
     []
 }
@@ -585,10 +585,10 @@ circuit get_apps_for_org(
     graph_id: bytes(32),
     org_id: string,
 ) -> list<ApplicationNode>
-    lex esn/global/org/polylabs/oauth
-    status production
-    precision B
-    observe metrics: [app_queries, app_count]
+    lex global/org/polylabs/oauth
+    @status production
+    @precision B
+    @observe metrics: [app_queries, app_count]
 {
     []
 }
@@ -597,10 +597,10 @@ circuit get_sps_for_org(
     graph_id: bytes(32),
     org_id: string,
 ) -> list<ServiceProviderNode>
-    lex esn/global/org/polylabs/oauth
-    status production
-    precision B
-    observe metrics: [sp_queries, sp_count]
+    lex global/org/polylabs/oauth
+    @status production
+    @precision B
+    @observe metrics: [sp_queries, sp_count]
 {
     []
 }
@@ -611,11 +611,11 @@ circuit snapshot_org_quantum_state(
     org_id: string,
     signing_sk: bytes(4896),
 ) -> string
-    lex esn/global/org/polylabs/oauth
-    status production
-    precision C
-    povc true
-    observe metrics: [snapshots_created, snapshot_size_bytes]
+    lex global/org/polylabs/oauth
+    @status production
+    @precision C
+    @attested true
+    @observe metrics: [snapshots_created, snapshot_size_bytes]
 {
     let org = graph_query(identity_federation, org_id)
     let apps = graph_traverse(identity_federation, org_id, BelongsToEdge)

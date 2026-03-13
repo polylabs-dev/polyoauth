@@ -1,4 +1,4 @@
-// Poly OAuth Metering — OAuth operation metering with 8D dimensions (v0.11.0)
+// Poly OAuth Metering — OAuth operation metering with 8D dimensions (v0.12.0)
 //
 // Lex Architecture:
 //   esn/global/org/polylabs/oauth/metering
@@ -16,7 +16,7 @@ data OAuthMeteringRecord : oauth v1 {
     timestamp_ms: u64,
 }
     store kv
-    govern lex esn/global/org/polylabs/oauth/metering
+    govern lex global/org/polylabs/oauth/metering
     cortex {
         obfuscate [user_id]
         infer on_write
@@ -35,7 +35,7 @@ data OrgUsageSummary : oauth v1 {
     period_end_ms: u64,
 }
     store kv
-    govern lex esn/global/org/polylabs/oauth/metering
+    govern lex global/org/polylabs/oauth/metering
     cortex {
         infer on_read
     }
@@ -48,7 +48,7 @@ data UserQuotaStatus : oauth v1 {
     quota_remaining_pct: u8,
 }
     store kv
-    govern lex esn/global/org/polylabs/oauth/metering
+    govern lex global/org/polylabs/oauth/metering
     cortex {
         obfuscate [user_id]
         infer on_read
@@ -61,9 +61,9 @@ stream oauth_metering_events: event<OAuthMeteringRecord>
 // --- Meter an authentication operation [E,O] ---
 circuit meter_auth(user_id: bytes(16), org_id: bytes(16), auth_type: string) -> OAuthMeteringRecord
     profile poly_framework_standard
-    lex esn/global/org/polylabs/oauth/metering
-    precision B
-    observe metrics: [auth_metered, auth_meter_latency_ns]
+    lex global/org/polylabs/oauth/metering
+    @precision B
+    @observe metrics: [auth_metered, auth_meter_latency_ns]
     meters [compute_cycles, memory_bytes]
     wasm_abi [eslite_insert, stream_emit, now]
 {
@@ -96,9 +96,9 @@ circuit meter_auth(user_id: bytes(16), org_id: bytes(16), auth_type: string) -> 
 // --- Meter a token operation [E,O] ---
 circuit meter_token(user_id: bytes(16), org_id: bytes(16), token_op: string) -> OAuthMeteringRecord
     profile poly_framework_standard
-    lex esn/global/org/polylabs/oauth/metering
-    precision B
-    observe metrics: [token_metered, token_meter_latency_ns]
+    lex global/org/polylabs/oauth/metering
+    @precision B
+    @observe metrics: [token_metered, token_meter_latency_ns]
     meters [compute_cycles, memory_bytes]
     wasm_abi [eslite_insert, stream_emit, now]
 {
@@ -140,9 +140,9 @@ circuit meter_token(user_id: bytes(16), org_id: bytes(16), token_op: string) -> 
 // --- Meter a session operation [O,S] ---
 circuit meter_session(user_id: bytes(16), org_id: bytes(16), session_op: string) -> OAuthMeteringRecord
     profile poly_framework_standard
-    lex esn/global/org/polylabs/oauth/metering
-    precision B
-    observe metrics: [session_metered]
+    lex global/org/polylabs/oauth/metering
+    @precision B
+    @observe metrics: [session_metered]
     meters [compute_cycles, memory_bytes]
     wasm_abi [eslite_insert, stream_emit, now]
 {
@@ -183,9 +183,9 @@ circuit meter_session(user_id: bytes(16), org_id: bytes(16), session_op: string)
 // --- Check user quota against tier limits ---
 circuit check_user_quota(user_id: bytes(16), tier: TierLimits) -> UserQuotaStatus
     profile poly_framework_standard
-    lex esn/global/org/polylabs/oauth/metering
-    precision B
-    observe metrics: [quota_checks, quota_violations]
+    lex global/org/polylabs/oauth/metering
+    @precision B
+    @observe metrics: [quota_checks, quota_violations]
     monitor "quota_violation_rate" { quota_violations / quota_checks < 0.1 }
     property safety "quota_bounded" { output.quota_remaining_pct <= 100 }
 {
@@ -210,9 +210,9 @@ circuit check_user_quota(user_id: bytes(16), tier: TierLimits) -> UserQuotaStatu
 // --- Get aggregated usage for an entire organization ---
 circuit get_org_usage(org_id: bytes(16), period_start: u64, period_end: u64) -> OrgUsageSummary
     profile poly_framework_standard
-    lex esn/global/org/polylabs/oauth/metering
-    precision B
-    observe metrics: [org_usage_queries]
+    lex global/org/polylabs/oauth/metering
+    @precision B
+    @observe metrics: [org_usage_queries]
     wasm_abi [eslite_query]
 {
     let records = eslite_query_range(org_id, period_start, period_end)
