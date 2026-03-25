@@ -111,7 +111,7 @@ circuit polyoauth_platform_health(
     @attested true
     constant_time true
     @serialize "verify/polyoauth_platform_health.esz"
-    li_feed full_escir true, optimized_ir true, optimization_metadata true
+    li_feed full_flir true, optimized_ir true, optimization_metadata true
     @observe metrics: [health_snapshots_emitted, health_snapshots_rejected, oauth_anomalies_detected]
     monitor "auth_failure_rate" { auth_failures / auth_attempts < 0.1 }
     monitor "health_emission_rate" { health_snapshots_emitted < 60/hr }

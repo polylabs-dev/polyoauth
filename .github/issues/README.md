@@ -11,7 +11,7 @@
 | 003 | OpenID Connect (OIDC) provider | Open | P0 |
 | 004 | SPARK biometric authentication integration | Open | P0 |
 | 005 | ML-DSA-87 token signing (PQ-JWT) | Open | P0 |
-| 006 | Design ESCIR auth circuit | Open | P0 |
+| 006 | Design FLIR auth circuit | Open | P0 |
 | 007 | JWKS endpoint (ML-DSA-87 public keys) | Open | P0 |
 | 008 | Discovery (.well-known/openid-configuration) | Open | P0 |
 

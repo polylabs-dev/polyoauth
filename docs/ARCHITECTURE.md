@@ -4,7 +4,7 @@
 **Date**: February 2026
 **Platform**: eStream v0.9.1
 **Upstream**: PolyKit v0.3.0, eStream scatter-cas, graph/DAG constructs
-**Build Pipeline**: FastLang (.fl) → ESCIR → Rust/WASM codegen → .escd
+**Build Pipeline**: FastLang (.fl) → FLIR → Rust/WASM codegen → .escd
 
 ---
 
@@ -17,9 +17,9 @@ Poly OAuth is the first post-quantum biometric OAuth/OIDC identity provider. It 
 | Area | v2.0 | v3.0 |
 |------|------|------|
 | Identity model | Flat user/org store | `graph identity_federation` with typed overlays |
-| Token model | ESCIR-signed blob | `dag token_chain` with acyclic enforcement + ML-DSA-87 signing |
+| Token model | FLIR-signed blob | `dag token_chain` with acyclic enforcement + ML-DSA-87 signing |
 | Session state | Implicit | `state_machine session_lifecycle` (INITIATED → REVOKED) |
-| Circuit format | ESCIR YAML (`circuit.escir.yaml`) | FastLang `.fl` with PolyKit profiles |
+| Circuit format | FLIR YAML (`circuit.flir.yaml`) | FastLang `.fl` with PolyKit profiles |
 | RBAC | Per-circuit annotations | eStream `rbac.fl` composed via PolyKit |
 | Platform | eStream v0.8.1 | eStream v0.9.1 |
 
@@ -885,7 +885,7 @@ polyoauth/
 - PQ certificate authority (ML-DSA-87 CA for enterprise PKI)
 - Lex bridge for enterprise cross-product visibility (opt-in, k-of-n gated)
 - Poly Vault HSM integration (signing keys in hardware)
-- Custom auth flows (ESCIR programmable)
+- Custom auth flows (FLIR programmable)
 - Enterprise tier + SLA
 - ESN-AI optimization recommendations
 

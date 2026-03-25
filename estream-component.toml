@@ -18,9 +18,9 @@ signing_key_id = "polylabs-signing-key-01"
 email = "engineering@polylabs.dev"
 url = "https://github.com/polylabs-dev"
 
-[escir]
-api_version = "0.9.1"
-min_platform_version = "0.9.1"
+[flir]
+api_version = "0.22.0"
+min_platform_version = "0.22.0"
 max_platform_version = "1.0.0"
 
 [lex]
