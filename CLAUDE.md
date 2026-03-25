@@ -1,6 +1,6 @@
 # Poly OAuth
 
-Post-quantum biometric OAuth/OIDC identity provider built on eStream v0.11.0 and PolyKit v0.3.0.
+Post-quantum biometric OAuth/OIDC identity provider built on eStream v0.22.0 and PolyKit v0.3.0. 100% FastLang. No hand-written Rust.
 
 ## Overview
 
@@ -14,7 +14,7 @@ Poly OAuth extends eStream's SPARK Auth into a standards-compliant OAuth 2.0 / O
 - **State machine**: `session_lifecycle` (INITIATED → CHALLENGED → AUTHENTICATED → ACTIVE → EXPIRED → REVOKED)
 - **Overlays**: session_count, active_users, last_auth_ns, risk_score (identity_federation); validity_status, usage_count (token_chain)
 - **ai_feed**: auth_anomaly on identity_federation (unusual login patterns, geo-velocity, device fingerprint drift)
-- **Build**: FastLang `.fl` → ESCIR → Rust/WASM → `.escd`
+- **Build**: FastLang `.fl` → FLIR → Rust/WASM → `.escd`
 - **RBAC**: eStream `rbac.fl` composed via PolyKit profiles
 
 ## Architecture
@@ -31,12 +31,10 @@ See `docs/ARCHITECTURE.md` for full specification including graph/DAG constructs
 | Token Circuit | `circuits/fl/polyoauth_token.fl` | PQ-JWT issuance, refresh, revocation |
 | Session Circuit | `circuits/fl/polyoauth_session.fl` | Session lifecycle management |
 | Risk Circuit | `circuits/fl/polyoauth_risk.fl` | ESLM risk scoring, anomaly evaluation |
-| SAML Bridge | `crates/saml-bridge/` | SAML 2.0 for legacy enterprise apps |
-| SCIM Provider | `crates/scim/` | User provisioning/deprovisioning |
-| OAuth Server | `crates/poly-oauth-server/` | OAuth 2.0 / OIDC / SAML provider |
 | Admin Console | `apps/admin/` | Organization and policy management |
 | Login UI | `apps/login/` | SPARK biometric login interface |
-| SDK | `packages/poly-oauth-sdk/` | Client integration library |
+
+> **Note**: `crates/` and `packages/` are legacy scaffolding superseded by FLIR codegen. All logic lives in FastLang circuits.
 
 ## No REST API (Internal)
 
@@ -52,18 +50,14 @@ Internal management uses eStream Wire Protocol. External OAuth/OIDC/SAML endpoin
 
 ## Platform
 
-- eStream v0.11.0
+- eStream v0.22.0
 - PolyKit v0.3.0
+- FLIR codegen (FastLang → FLIR → Rust/WASM)
 - ML-KEM-1024, ML-DSA-87, SHA3-256
 - 8-Dimension metering
 - Blinded billing tokens
 - Compatible with: OAuth 2.0, OIDC, SAML 2.0, SCIM 2.0, FIDO2/WebAuthn
 
-## Cross-Repo Coordination
+## Commit Convention
 
-This repo is part of the [polylabs-dev](https://github.com/polylabs-dev) organization, coordinated through the **AI Toolkit hub** at `toddrooke/ai-toolkit/`.
-
-For cross-repo context, strategic priorities, and the master work queue:
-- `toddrooke/ai-toolkit/CLAUDE-CONTEXT.md` — org map and priorities
-- `toddrooke/ai-toolkit/scratch/BACKLOG.md` — master backlog
-- `toddrooke/ai-toolkit/repos/polylabs-dev.md` — this org's status summary
+Commit to the GitHub issue or epic the work was done under.
