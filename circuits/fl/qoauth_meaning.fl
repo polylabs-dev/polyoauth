@@ -2,15 +2,15 @@
 /// PolyOAuth CE Meaning Domains — 3 meaning domains, 1 noise filter,
 /// 2 SME panels for the PolyOAuth cognitive integration.
 ///
-/// Epic: polyoauth#TBD (CE + App Graph Integration)
-/// govern lex polylabs/polyoauth/cognitive
+/// Epic: qoauth#TBD (CE + App Graph Integration)
+/// govern lex polyqlabs/qoauth/cognitive
 
-lex polylabs/polyoauth/cognitive
+lex polyqlabs/qoauth/cognitive
 
 @target software
 @codegen_targets ["wasm", "rust"]
 
-import "polykit/circuits/fl/polykit_cognitive.fl" {
+import "qkit/circuits/fl/qkit_cognitive.fl" {
     ProductMeaningDomain, MeaningIngestion, DomainId, MeaningId,
     ObservationHash, NoiseFilterId, SmePanelId,
     register_meaning_domain,
@@ -23,37 +23,37 @@ type ThresholdConfig = bytes(32)
 
 // ── Domain Data ─────────────────────────────────────────────────────────────────
 
-data AuthPatternsDomain : polyoauth/cognitive v1 {
+data AuthPatternsDomain : qoauth/cognitive v1 {
     domain_id: DomainId,
     login_latency_window_ms: u64,
     risk_score_spike_sigma: u8,
     credential_rotation_max_age_days: u16,
     step_up_trigger_threshold_bps: u16,
-}   store kv  govern lex polylabs/polyoauth/cognitive
+}   store kv  govern lex polyqlabs/qoauth/cognitive
     cortex { infer on_write; on_anomaly alert "oauth-security" }
 
-data SessionHealthDomain : polyoauth/cognitive v1 {
+data SessionHealthDomain : qoauth/cognitive v1 {
     domain_id: DomainId,
     session_idle_timeout_ms: u64,
     concurrent_session_limit: u16,
     premature_expiry_rate_ceiling_bps: u16,
     token_refresh_to_access_ratio_floor_bps: u16,
     token_reuse_detection_enabled: bool,
-}   store kv  govern lex polylabs/polyoauth/cognitive
+}   store kv  govern lex polyqlabs/qoauth/cognitive
     cortex { infer on_write; on_anomaly alert "oauth-security" }
 
-data FederationCoverageDomain : polyoauth/cognitive v1 {
+data FederationCoverageDomain : qoauth/cognitive v1 {
     domain_id: DomainId,
     provider_failure_rate_ceiling_bps: u16,
     discovery_endpoint_timeout_ms: u64,
     webauthn_adoption_target_bps: u16,
     token_exchange_success_floor_bps: u16,
-}   store kv  govern lex polylabs/polyoauth/cognitive
+}   store kv  govern lex polyqlabs/qoauth/cognitive
     cortex { infer on_write; on_anomaly alert "oauth-team" }
 
 // ── Noise Filter ────────────────────────────────────────────────────────────────
 
-data OAuthNoiseFilterConfig : polyoauth/cognitive v1 {
+data OAuthNoiseFilterConfig : qoauth/cognitive v1 {
     filter_id: NoiseFilterId,
     suppress_token_refresh_cycles: bool,
     suppress_session_keepalives: bool,
@@ -62,29 +62,29 @@ data OAuthNoiseFilterConfig : polyoauth/cognitive v1 {
     keepalive_dedup_window_ms: u64,
     min_signal_confidence: u8,
     dedup_window_ms: u64,
-}   store kv  govern lex polylabs/polyoauth/cognitive
+}   store kv  govern lex polyqlabs/qoauth/cognitive
     cortex { infer on_write }
 
 // ── SME Panels ──────────────────────────────────────────────────────────────────
 
-data IdentitySecurityPosturePanel : polyoauth/cognitive v1 {
+data IdentitySecurityPosturePanel : qoauth/cognitive v1 {
     panel_id: SmePanelId,
     domain_scope: bytes(64),
     min_panelists: u8,
     specializations: list<bytes(32)>,
     calibration_accuracy_floor_bps: u16,
     review_timeout_ms: u64,
-}   store kv  govern lex polylabs/polyoauth/cognitive
+}   store kv  govern lex polyqlabs/qoauth/cognitive
     cortex { infer on_write; on_anomaly alert "oauth-security" }
 
-data FederationHealthPanel : polyoauth/cognitive v1 {
+data FederationHealthPanel : qoauth/cognitive v1 {
     panel_id: SmePanelId,
     domain_scope: bytes(64),
     min_panelists: u8,
     specializations: list<bytes(32)>,
     calibration_accuracy_floor_bps: u16,
     review_timeout_ms: u64,
-}   store kv  govern lex polylabs/polyoauth/cognitive
+}   store kv  govern lex polyqlabs/qoauth/cognitive
     cortex { infer on_write; on_anomaly alert "oauth-ops" }
 
 // ── Streams & Series ────────────────────────────────────────────────────────────
@@ -93,7 +93,7 @@ stream auth_patterns_obs:        event<MeaningIngestion> { retention 90d;  consu
 stream session_health_obs:       event<MeaningIngestion> { retention 365d; consumers [streamsight, cortex, audit_trail] }
 stream federation_coverage_obs:  event<MeaningIngestion> { retention 90d;  consumers [streamsight, cortex] }
 
-series polyoauth_cognitive_series {
+series qoauth_cognitive_series {
     over AuthPatternsDomain,
     fields: [login_latency_p50, login_latency_p99, risk_score_p95,
              session_duration_p50, idle_ratio, concurrent_sessions,
@@ -109,7 +109,7 @@ extern {
 // ── Domain Registration Circuits ────────────────────────────────────────────────
 
 circuit register_auth_patterns_domain() -> ProductMeaningDomain
-    profile poly_framework_standard  lex polylabs/polyoauth/cognitive  precision B
+    profile poly_framework_standard  lex polyqlabs/qoauth/cognitive  precision B
     rbac [admin, operator]  observe metrics: [domains_registered]
     meters [compute_cycles, memory_bytes, storage]
     wasm_abi [store_get, store_put, emit, now]
@@ -118,11 +118,11 @@ circuit register_auth_patterns_domain() -> ProductMeaningDomain
         assert len(r.domain_id) == 32
         assert r.crystallization_threshold == 75
     }
-{ register_meaning_domain(bytes(128, "polylabs/polyoauth"), bytes(64, "identity/auth_patterns"),
+{ register_meaning_domain(bytes(128, "polyqlabs/qoauth"), bytes(64, "identity/auth_patterns"),
     bytes(256, "Login frequency distribution, risk score trends, credential rotation health"), 75, 80) }
 
 circuit register_session_health_domain() -> ProductMeaningDomain
-    profile poly_framework_standard  lex polylabs/polyoauth/cognitive  precision B
+    profile poly_framework_standard  lex polyqlabs/qoauth/cognitive  precision B
     rbac [admin, operator]  observe metrics: [domains_registered]
     meters [compute_cycles, memory_bytes, storage]
     wasm_abi [store_get, store_put, emit, now]
@@ -131,11 +131,11 @@ circuit register_session_health_domain() -> ProductMeaningDomain
         assert len(r.domain_id) == 32
         assert r.crystallization_threshold == 80
     }
-{ register_meaning_domain(bytes(128, "polylabs/polyoauth"), bytes(64, "identity/session_health"),
+{ register_meaning_domain(bytes(128, "polyqlabs/qoauth"), bytes(64, "identity/session_health"),
     bytes(256, "Session duration distribution, timeout pattern anomalies, token refresh cadence"), 80, 90) }
 
 circuit register_federation_coverage_domain() -> ProductMeaningDomain
-    profile poly_framework_standard  lex polylabs/polyoauth/cognitive  precision B
+    profile poly_framework_standard  lex polyqlabs/qoauth/cognitive  precision B
     rbac [admin, operator]  observe metrics: [domains_registered]
     meters [compute_cycles, memory_bytes, storage]
     wasm_abi [store_get, store_put, emit, now]
@@ -144,13 +144,13 @@ circuit register_federation_coverage_domain() -> ProductMeaningDomain
         assert len(r.domain_id) == 32
         assert r.crystallization_threshold == 65
     }
-{ register_meaning_domain(bytes(128, "polylabs/polyoauth"), bytes(64, "identity/federation_coverage"),
+{ register_meaning_domain(bytes(128, "polyqlabs/qoauth"), bytes(64, "identity/federation_coverage"),
     bytes(256, "Provider usage distribution, token exchange volume, WebAuthn adoption rates"), 65, 60) }
 
 // ── Noise Filter Setup ──────────────────────────────────────────────────────────
 
 circuit configure_oauth_noise_filter() -> OAuthNoiseFilterConfig
-    profile poly_framework_standard  lex polylabs/polyoauth/cognitive  precision B
+    profile poly_framework_standard  lex polyqlabs/qoauth/cognitive  precision B
     rbac [admin]  observe metrics: [noise_filters_configured]
     meters [compute_cycles, storage]  wasm_abi [store_get, store_put, emit, now]
     test golden "configure_noise_filter" {
@@ -161,7 +161,7 @@ circuit configure_oauth_noise_filter() -> OAuthNoiseFilterConfig
         assert r.min_signal_confidence == 60
     }
 {
-    let fid = sha3_256(bytes(32, "polylabs/noise/polyoauth"))
+    let fid = sha3_256(bytes(32, "polyqlabs/noise/qoauth"))
     let cfg = OAuthNoiseFilterConfig {
         filter_id: fid,
         suppress_token_refresh_cycles: true,
@@ -179,7 +179,7 @@ circuit configure_oauth_noise_filter() -> OAuthNoiseFilterConfig
 // ── SME Panel Setup ─────────────────────────────────────────────────────────────
 
 circuit configure_identity_security_posture_panel() -> IdentitySecurityPosturePanel
-    profile poly_framework_standard  lex polylabs/polyoauth/cognitive  precision B
+    profile poly_framework_standard  lex polyqlabs/qoauth/cognitive  precision B
     rbac [admin]  observe metrics: [sme_panels_configured]
     meters [compute_cycles, storage]  wasm_abi [store_get, store_put, emit, now]
     test golden "configure_identity_security_panel" {
@@ -188,7 +188,7 @@ circuit configure_identity_security_posture_panel() -> IdentitySecurityPosturePa
         assert r.calibration_accuracy_floor_bps >= 7000
     }
 {
-    let pid = sha3_256(bytes(32, "polylabs/sme/polyoauth_identity"))
+    let pid = sha3_256(bytes(32, "polyqlabs/sme/qoauth_identity"))
     let p = IdentitySecurityPosturePanel {
         panel_id: pid,
         domain_scope: bytes(64, "identity/auth_patterns"),
@@ -203,7 +203,7 @@ circuit configure_identity_security_posture_panel() -> IdentitySecurityPosturePa
 }
 
 circuit configure_federation_health_panel() -> FederationHealthPanel
-    profile poly_framework_standard  lex polylabs/polyoauth/cognitive  precision B
+    profile poly_framework_standard  lex polyqlabs/qoauth/cognitive  precision B
     rbac [admin]  observe metrics: [sme_panels_configured]
     meters [compute_cycles, storage]  wasm_abi [store_get, store_put, emit, now]
     test golden "configure_federation_panel" {
@@ -212,7 +212,7 @@ circuit configure_federation_health_panel() -> FederationHealthPanel
         assert r.calibration_accuracy_floor_bps >= 7000
     }
 {
-    let pid = sha3_256(bytes(32, "polylabs/sme/polyoauth_federation"))
+    let pid = sha3_256(bytes(32, "polyqlabs/sme/qoauth_federation"))
     let p = FederationHealthPanel {
         panel_id: pid,
         domain_scope: bytes(64, "identity/federation_coverage"),
@@ -228,8 +228,8 @@ circuit configure_federation_health_panel() -> FederationHealthPanel
 
 // ── CE Orchestrator ─────────────────────────────────────────────────────────────
 
-circuit polyoauth_register_ce(product_lex: string) -> bool
-    profile poly_framework_standard  lex polylabs/polyoauth/cognitive  precision B
+circuit qoauth_register_ce(product_lex: string) -> bool
+    profile poly_framework_standard  lex polyqlabs/qoauth/cognitive  precision B
     rbac [admin]  observe metrics: [ce_registrations]
     meters [compute_cycles, memory_bytes, storage]
     wasm_abi [store_get, store_put, emit, now]
@@ -250,7 +250,7 @@ circuit polyoauth_register_ce(product_lex: string) -> bool
 
 test golden "full_ce_pipeline_setup" {
     exec {
-        let result = polyoauth_register_ce("polylabs/polyoauth")
+        let result = qoauth_register_ce("polyqlabs/qoauth")
     }
     assert {
         result == true

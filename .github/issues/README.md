@@ -1,8 +1,8 @@
-# Poly OAuth - GitHub Issues
+# Q OAuth - GitHub Issues
 
-> GitHub org: [polylabs-dev](https://github.com/polylabs-dev) | Domain: [polylabs.dev](https://polylabs.dev)
+> GitHub org: [polylabs-dev](https://github.com/polylabs-dev) | Domain: [polyqlabs.dev](https://polyqlabs.dev)
 
-## Epic 01: Poly OAuth Core
+## Epic 01: Q OAuth Core
 
 | # | Issue | Status | Priority |
 |---|-------|--------|----------|
@@ -34,5 +34,5 @@
 | 016 | Risk-based authentication scoring | Open | P1 |
 | 017 | Federation with existing IdPs (Okta, Azure AD, Auth0) | Open | P1 |
 | 018 | PQ certificate authority | Open | P2 |
-| 019 | Poly Vault HSM integration (signing keys in hardware) | Open | P2 |
+| 019 | Q Vault HSM integration (signing keys in hardware) | Open | P2 |
 | 020 | Client SDK (JavaScript, Python, Go, Rust) | Open | P1 |

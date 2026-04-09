@@ -1,9 +1,9 @@
-/// Poly OAuth Token Chain DAG (v0.12.0)
+/// Q OAuth Token Chain DAG (v0.12.0)
 /// Stratum DAG storage + Cortex AI governance + ML-DSA-87 signed acyclic token model
-/// govern lex global/org/polylabs/oauth
+/// govern lex global/org/polyqlabs/oauth
 
-import polykit_identity
-import polykit_metering
+import qkit_identity
+import qkit_metering
 
 // ── Enums ────────────────────────────────────────────────────────
 
@@ -50,7 +50,7 @@ data TokenNode : oauth v1 {
     nonce: string,
 }
     store dag
-    govern lex global/org/polylabs/oauth
+    govern lex global/org/polyqlabs/oauth
     cortex {
         redact [claims_encrypted, signature]
         obfuscate [subject_id, issuer_id]
@@ -67,7 +67,7 @@ data RevocationNode : oauth v1 {
     cascade_count: u16,
 }
     store dag
-    govern lex global/org/polylabs/oauth
+    govern lex global/org/polyqlabs/oauth
     cortex {
         obfuscate [revoker_id]
         infer on_write
@@ -164,7 +164,7 @@ circuit issue_token(
     signing_key_id: string,
     encryption_pk: bytes(1568),
 ) -> TokenNode
-    lex global/org/polylabs/oauth
+    lex global/org/polyqlabs/oauth
     @status production
     @precision C
     @attested true
@@ -210,7 +210,7 @@ circuit issue_token(
     overlay_set(token_chain, token_id, usage_count, 0)
     overlay_set(token_chain, token_id, refresh_depth, 0)
 
-    polykit_metering::record_usage(subject_id, "dag_token_issue", DimensionValues {
+    qkit_metering::record_usage(subject_id, "dag_token_issue", DimensionValues {
         executions: 1, hashes: 2, bandwidth: 0,
         storage: 256, observables: 3, proofs: 1, circuits: 0, mpc_sessions: 0,
     })
@@ -230,7 +230,7 @@ circuit issue_authorization_code(
     signing_key_id: string,
     encryption_pk: bytes(1568),
 ) -> TokenNode
-    lex global/org/polylabs/oauth
+    lex global/org/polyqlabs/oauth
     @status production
     @precision C
     @attested true
@@ -260,7 +260,7 @@ circuit refresh_token(
     access_ttl_ms: u64,
     refresh_ttl_ms: u64,
 ) -> (TokenNode, TokenNode)
-    lex global/org/polylabs/oauth
+    lex global/org/polyqlabs/oauth
     @status production
     @precision C
     @attested true
@@ -328,7 +328,7 @@ circuit revoke_token(
     reason: u8,
     signing_sk: bytes(4896),
 ) -> RevocationNode
-    lex global/org/polylabs/oauth
+    lex global/org/polyqlabs/oauth
     @status production
     @precision C
     @attested true
@@ -382,7 +382,7 @@ circuit revoke_token(
 
     eslm_feed(token_anomaly, concat("revocation:", token_id, ":", reason), cascade_count)
 
-    polykit_metering::record_usage(revoker_id, "dag_token_revoke", DimensionValues {
+    qkit_metering::record_usage(revoker_id, "dag_token_revoke", DimensionValues {
         executions: 1, hashes: 1, bandwidth: 0,
         storage: 64, observables: 2, proofs: 1, circuits: 0, mpc_sessions: 0,
     })
@@ -396,7 +396,7 @@ circuit verify_chain(
     token_id: string,
     issuer_pk: bytes(2592),
 ) -> bool
-    lex global/org/polylabs/oauth
+    lex global/org/polyqlabs/oauth
     @status production
     @precision B
     @attested true
@@ -435,7 +435,7 @@ circuit introspect_token(
     token_id: string,
     issuer_pk: bytes(2592),
 ) -> (bool, TokenNode, u64)
-    lex global/org/polylabs/oauth
+    lex global/org/polyqlabs/oauth
     @status production
     @precision B
     @attested true
@@ -461,7 +461,7 @@ circuit exchange_authorization_code(
     access_ttl_ms: u64,
     refresh_ttl_ms: u64,
 ) -> (TokenNode, TokenNode)
-    lex global/org/polylabs/oauth
+    lex global/org/polyqlabs/oauth
     @status production
     @precision C
     @attested true
@@ -517,7 +517,7 @@ circuit snapshot_token_chain_state(
     app_id: string,
     signing_sk: bytes(4896),
 ) -> string
-    lex global/org/polylabs/oauth
+    lex global/org/polyqlabs/oauth
     @status production
     @precision C
     @attested true
@@ -548,7 +548,7 @@ test golden "issue_access_token" {
     input {
         session_id: "sess-1"
         subject_id: "user-1"
-        issuer_id: "polylabs-oauth"
+        issuer_id: "polyqlabs-oauth"
         app_id: "app-1"
         token_type: 0
         scope: "openid profile"

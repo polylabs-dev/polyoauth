@@ -1,10 +1,10 @@
 [package]
-name = "@polylabs/polyoauth"
+name = "@polyqlabs/qoauth"
 version = "0.1.0"
 description = "PQ biometric SSO/identity provider — SPARK-based authentication, token grants, federation, and risk-adaptive session management"
 license = "Apache-2.0"
-repository = "https://github.com/polylabs-dev/polyoauth"
-homepage = "https://polylabs.dev/polyoauth"
+repository = "https://github.com/polylabs-dev/qoauth"
+homepage = "https://polyqlabs.dev/qoauth"
 readme = "README.md"
 keywords = ["oauth", "sso", "biometric", "spark", "identity", "federation", "pq-crypto", "risk-assessment"]
 category = "smart-circuit"
@@ -13,9 +13,9 @@ status = "Active"
 
 [publisher]
 id = "b7e3a1d9f04c28561ea7b3c0d5f29184a6e80b7cd3f491025e8a6b7c0d3f4e5a"
-name = "Poly Labs"
-signing_key_id = "polylabs-signing-key-01"
-email = "engineering@polylabs.dev"
+name = "PolyQ Labs"
+signing_key_id = "polyqlabs-signing-key-01"
+email = "engineering@polyqlabs.dev"
 url = "https://github.com/polylabs-dev"
 
 [flir]
@@ -25,9 +25,9 @@ max_platform_version = "1.0.0"
 
 [lex]
 requirements = [
-    "esn/polylabs/polyoauth/sessions",
-    "esn/polylabs/polyoauth/tokens",
-    "esn/polylabs/polyoauth/federation",
+    "esn/polyqlabs/qoauth/sessions",
+    "esn/polyqlabs/qoauth/tokens",
+    "esn/polyqlabs/qoauth/federation",
     "esn/marketplace/licensing",
 ]
 
@@ -83,8 +83,8 @@ breaking_change_notice_days = 90
 changelog = "CHANGELOG.md"
 
 [author]
-name = "Poly Labs"
-email = "engineering@polylabs.dev"
+name = "PolyQ Labs"
+email = "engineering@polyqlabs.dev"
 url = "https://github.com/polylabs-dev"
 
 [marketplace]

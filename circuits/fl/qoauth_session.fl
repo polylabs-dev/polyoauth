@@ -1,13 +1,13 @@
-// Poly OAuth Session — lifecycle management with risk-based step-up (v0.12.0)
+// Q OAuth Session — lifecycle management with risk-based step-up (v0.12.0)
 //
 // Lex Architecture:
-//   esn/global/org/polylabs/oauth/session
+//   esn/global/org/polyqlabs/oauth/session
 //   Sessions follow strict state machine: INITIATED → CHALLENGED →
 //   AUTHENTICATED → ACTIVE → EXPIRED/REVOKED.
 //   Scatter-stored across providers, no single server holds full state.
 
-import polykit_identity
-import polykit_metering
+import qkit_identity
+import qkit_metering
 
 type SessionState = enum {
     Initiated,
@@ -43,7 +43,7 @@ data SessionMetadata : oauth v1 {
     challenge_id: bytes(16),
 }
     store kv
-    govern lex global/org/polylabs/oauth/session
+    govern lex global/org/polyqlabs/oauth/session
     cortex {
         redact [ip_hash]
         obfuscate [user_id, geo_hash]
@@ -60,7 +60,7 @@ data SessionTransition : oauth v1 {
     signature: bytes(4627),
 }
     store kv
-    govern lex global/org/polylabs/oauth/session
+    govern lex global/org/polyqlabs/oauth/session
     cortex {
         infer on_write
         on_anomaly alert "oauth-team"
@@ -94,7 +94,7 @@ stream session_transition_events: event<SessionTransition>
 // --- Create a new session (INITIATED state) ---
 circuit create_session(user_id: bytes(16), device: DeviceFingerprint, geo_hash: bytes(8), ip_hash: bytes(32)) -> SessionMetadata
     profile poly_framework_sensitive
-    lex global/org/polylabs/oauth/session
+    lex global/org/polyqlabs/oauth/session
     @precision C
     constant_time true
     @observe metrics: [sessions_created, session_create_latency_ns]
@@ -127,7 +127,7 @@ circuit create_session(user_id: bytes(16), device: DeviceFingerprint, geo_hash: 
 
     transition(session_lifecycle, session.session_id, SessionState::Initiated)
 
-    polykit_metering::record_usage(user_id, "session_create", DimensionValues {
+    qkit_metering::record_usage(user_id, "session_create", DimensionValues {
         executions: 1, hashes: 1, bandwidth: 0,
         storage: 256, observables: 1, proofs: 0, circuits: 0, mpc_sessions: 0,
     })
@@ -146,7 +146,7 @@ circuit authenticate_session(
     signing_sk: bytes(4896)
 ) -> (SessionMetadata, SessionTransition)
     profile poly_framework_sensitive
-    lex global/org/polylabs/oauth/session
+    lex global/org/polyqlabs/oauth/session
     @precision C
     constant_time true
     @observe metrics: [sessions_authenticated, auth_session_latency_ns]
@@ -202,7 +202,7 @@ circuit authenticate_session(
 // --- Refresh an active session, extending expiry ---
 circuit refresh_session(session: SessionMetadata, new_geo_hash: bytes(8), new_ip_hash: bytes(32)) -> SessionMetadata
     profile poly_framework_standard
-    lex global/org/polylabs/oauth/session
+    lex global/org/polyqlabs/oauth/session
     @precision B
     @observe metrics: [sessions_refreshed, refresh_latency_ns]
     invariant "active_state" { session.state == SessionState::Active }
@@ -236,7 +236,7 @@ circuit refresh_session(session: SessionMetadata, new_geo_hash: bytes(8), new_ip
 // --- Revoke a session (terminal state) ---
 circuit revoke_session(session: SessionMetadata, revoker_id: bytes(16), signing_sk: bytes(4896)) -> SessionTransition
     profile poly_framework_sensitive
-    lex global/org/polylabs/oauth/session
+    lex global/org/polyqlabs/oauth/session
     @precision C
     constant_time true
     @observe metrics: [sessions_revoked, revocation_latency_ns]
@@ -267,7 +267,7 @@ circuit revoke_session(session: SessionMetadata, revoker_id: bytes(16), signing_
 // --- Check session validity ---
 circuit check_session(session: SessionMetadata) -> (bool, SessionState)
     profile poly_framework_standard
-    lex global/org/polylabs/oauth/session
+    lex global/org/polyqlabs/oauth/session
     @precision B
     @observe metrics: [session_checks]
 {

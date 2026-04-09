@@ -1,14 +1,14 @@
-// Poly OAuth RBAC — Role-based access control graph (v0.12.0)
+// Q OAuth RBAC — Role-based access control graph (v0.12.0)
 //
 // Lex Architecture:
-//   esn/global/org/polylabs/oauth/rbac
+//   esn/global/org/polyqlabs/oauth/rbac
 //   RBAC roles: User, Admin, AppDeveloper, Auditor.
-//   Permissions are composable via PolyKit profiles.
+//   Permissions are composable via QKit profiles.
 //   Role assignments are ML-DSA-87 signed and auditable.
 
-import polykit_identity
-import polykit_metering
-import polykit_governance
+import qkit_identity
+import qkit_metering
+import qkit_governance
 
 // ── Enums ────────────────────────────────────────────────────────
 
@@ -53,7 +53,7 @@ data RoleBinding : oauth v1 {
     active: bool,
 }
     store kv
-    govern lex global/org/polylabs/oauth/rbac
+    govern lex global/org/polyqlabs/oauth/rbac
     cortex {
         obfuscate [user_id, granted_by]
         infer on_write
@@ -69,7 +69,7 @@ data RolePermissionMap : oauth v1 {
     requires_mfa: bool,
 }
     store kv
-    govern lex global/org/polylabs/oauth/rbac
+    govern lex global/org/polyqlabs/oauth/rbac
     cortex {
         infer on_read
     }
@@ -85,7 +85,7 @@ data AccessDecision : oauth v1 {
     reason: string,
 }
     store kv
-    govern lex global/org/polylabs/oauth/rbac
+    govern lex global/org/polyqlabs/oauth/rbac
     cortex {
         obfuscate [user_id]
         infer on_write
@@ -104,7 +104,7 @@ data RoleAuditEntry : oauth v1 {
     signature: bytes(4627),
 }
     store kv
-    govern lex global/org/polylabs/oauth/rbac
+    govern lex global/org/polyqlabs/oauth/rbac
     cortex {
         obfuscate [actor_id, target_user_id]
         infer on_write
@@ -121,7 +121,7 @@ stream access_decision_events: event<AccessDecision>
 // --- Initialize default role-permission mappings ---
 circuit init_role_permissions() -> list<RolePermissionMap>
     profile poly_framework_standard
-    lex global/org/polylabs/oauth/rbac
+    lex global/org/polyqlabs/oauth/rbac
     @precision B
     @observe metrics: [role_map_initializations]
     wasm_abi [eslite_insert]
@@ -195,7 +195,7 @@ circuit assign_role(
     signing_sk: bytes(4896),
 ) -> RoleBinding
     profile poly_framework_sensitive
-    lex global/org/polylabs/oauth/rbac
+    lex global/org/polyqlabs/oauth/rbac
     @precision C
     constant_time true
     @observe metrics: [roles_assigned, role_assignment_latency_ns]
@@ -240,7 +240,7 @@ circuit assign_role(
     }
     emit(rbac_events, audit)
 
-    polykit_metering::record_usage(actor_id, "rbac_assign", DimensionValues {
+    qkit_metering::record_usage(actor_id, "rbac_assign", DimensionValues {
         executions: 1, hashes: 1, bandwidth: 0,
         storage: 256, observables: 1, proofs: 1, circuits: 0, mpc_sessions: 0,
     })
@@ -255,7 +255,7 @@ circuit revoke_role(
     signing_sk: bytes(4896),
 ) -> RoleBinding
     profile poly_framework_sensitive
-    lex global/org/polylabs/oauth/rbac
+    lex global/org/polyqlabs/oauth/rbac
     @precision C
     constant_time true
     @observe metrics: [roles_revoked, role_revocation_latency_ns]
@@ -300,7 +300,7 @@ circuit check_permission(
     action: string,
 ) -> AccessDecision
     profile poly_framework_standard
-    lex global/org/polylabs/oauth/rbac
+    lex global/org/polyqlabs/oauth/rbac
     @precision B
     @observe metrics: [permission_checks, permission_denials, check_latency_ns]
     monitor "denial_rate" { permission_denials / permission_checks < 0.3 }
@@ -348,7 +348,7 @@ circuit check_permission(
 // --- List all roles for a user in an organization ---
 circuit list_user_roles(user_id: bytes(16), org_id: bytes(16)) -> list<RoleBinding>
     profile poly_framework_standard
-    lex global/org/polylabs/oauth/rbac
+    lex global/org/polyqlabs/oauth/rbac
     @precision B
     @observe metrics: [role_list_queries]
     meters [compute_cycles, memory_bytes]
@@ -364,7 +364,7 @@ circuit list_user_roles(user_id: bytes(16), org_id: bytes(16)) -> list<RoleBindi
 // --- Get effective permissions for a user (union of all roles) ---
 circuit get_effective_permissions(user_id: bytes(16), org_id: bytes(16)) -> list<Permission>
     profile poly_framework_standard
-    lex global/org/polylabs/oauth/rbac
+    lex global/org/polyqlabs/oauth/rbac
     @precision B
     @observe metrics: [permission_resolution_queries]
     meters [compute_cycles, memory_bytes]

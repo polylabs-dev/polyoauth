@@ -1,21 +1,21 @@
-# Poly OAuth
+# Q OAuth
 
-Post-quantum biometric OAuth/OIDC identity provider built on eStream v0.22.0 and PolyKit v0.3.0. 100% FastLang. No hand-written Rust.
+Post-quantum biometric OAuth/OIDC identity provider built on eStream v0.22.0 and QKit v0.3.0. 100% FastLang. No hand-written Rust.
 
 ## Overview
 
-Poly OAuth extends eStream's SPARK Auth into a standards-compliant OAuth 2.0 / OpenID Connect / SAML 2.0 identity provider with PQ biometric authentication — no passwords, no TOTP, no SMS codes. Tokens are ML-DSA-87 signed assertions (not classical JWTs). Sessions are scatter-stored, and ESLM anomaly detection flags suspicious authentication patterns in real time. First PQ biometric OAuth provider. Once an enterprise integrates Poly OAuth SSO, the switching cost is enormous.
+Q OAuth extends eStream's SPARK Auth into a standards-compliant OAuth 2.0 / OpenID Connect / SAML 2.0 identity provider with PQ biometric authentication — no passwords, no TOTP, no SMS codes. Tokens are ML-DSA-87 signed assertions (not classical JWTs). Sessions are scatter-stored, and ESLM anomaly detection flags suspicious authentication patterns in real time. First PQ biometric OAuth provider. Once an enterprise integrates Q OAuth SSO, the switching cost is enormous.
 
 ## Key Patterns
 
-- **Zero-linkage**: HKDF context `poly-oauth-v1`, lex `esn/global/org/polylabs/oauth`, isolated StreamSight + metering + billing
+- **Zero-linkage**: HKDF context `q-oauth-v1`, lex `esn/global/org/polyqlabs/oauth`, isolated StreamSight + metering + billing
 - **Graph model**: `graph identity_federation` (OrganizationNode, ApplicationNode, UserSessionNode, ServiceProviderNode) with CSR tiered storage
 - **DAG model**: `dag token_chain` (TokenNode with ML-DSA-87 signatures, RefreshEdge, RevocationEdge) — acyclic enforcement, tokens are PQ-signed assertions not shared secrets
 - **State machine**: `session_lifecycle` (INITIATED → CHALLENGED → AUTHENTICATED → ACTIVE → EXPIRED → REVOKED)
 - **Overlays**: session_count, active_users, last_auth_ns, risk_score (identity_federation); validity_status, usage_count (token_chain)
 - **ai_feed**: auth_anomaly on identity_federation (unusual login patterns, geo-velocity, device fingerprint drift)
 - **Build**: FastLang `.fl` → FLIR → Rust/WASM → `.escd`
-- **RBAC**: eStream `rbac.fl` composed via PolyKit profiles
+- **RBAC**: eStream `rbac.fl` composed via QKit profiles
 
 ## Architecture
 
@@ -25,12 +25,12 @@ See `docs/ARCHITECTURE.md` for full specification including graph/DAG constructs
 
 | Component | Location | Purpose |
 |-----------|----------|---------|
-| Identity Graph | `circuits/fl/graphs/polyoauth_identity_graph.fl` | Org/app/user/SP federation as typed graph |
-| Token DAG | `circuits/fl/graphs/polyoauth_token_dag.fl` | PQ-signed token chain with acyclic enforcement |
-| Auth Circuit | `circuits/fl/polyoauth_auth.fl` | SPARK challenge-response, ML-DSA-87 verification |
-| Token Circuit | `circuits/fl/polyoauth_token.fl` | PQ-JWT issuance, refresh, revocation |
-| Session Circuit | `circuits/fl/polyoauth_session.fl` | Session lifecycle management |
-| Risk Circuit | `circuits/fl/polyoauth_risk.fl` | ESLM risk scoring, anomaly evaluation |
+| Identity Graph | `circuits/fl/graphs/qoauth_identity_graph.fl` | Org/app/user/SP federation as typed graph |
+| Token DAG | `circuits/fl/graphs/qoauth_token_dag.fl` | PQ-signed token chain with acyclic enforcement |
+| Auth Circuit | `circuits/fl/qoauth_auth.fl` | SPARK challenge-response, ML-DSA-87 verification |
+| Token Circuit | `circuits/fl/qoauth_token.fl` | PQ-JWT issuance, refresh, revocation |
+| Session Circuit | `circuits/fl/qoauth_session.fl` | Session lifecycle management |
+| Risk Circuit | `circuits/fl/qoauth_risk.fl` | ESLM risk scoring, anomaly evaluation |
 | Admin Console | `apps/admin/` | Organization and policy management |
 | Login UI | `apps/login/` | SPARK biometric login interface |
 
@@ -51,7 +51,7 @@ Internal management uses eStream Wire Protocol. External OAuth/OIDC/SAML endpoin
 ## Platform
 
 - eStream v0.22.0
-- PolyKit v0.3.0
+- QKit v0.3.0
 - FLIR codegen (FastLang → FLIR → Rust/WASM)
 - ML-KEM-1024, ML-DSA-87, SHA3-256
 - 8-Dimension metering

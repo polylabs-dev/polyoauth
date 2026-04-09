@@ -1,13 +1,13 @@
-// Poly OAuth Admin — Organization and application management (v0.12.0)
+// Q OAuth Admin — Organization and application management (v0.12.0)
 //
 // Lex Architecture:
-//   esn/global/org/polylabs/oauth/admin
+//   esn/global/org/polyqlabs/oauth/admin
 //   Org registration, app registration, conditional access policies,
 //   SCIM 2.0 provisioning lifecycle. All mutations are ML-DSA-87 signed.
 
-import polykit_identity
-import polykit_metering
-import polykit_governance
+import qkit_identity
+import qkit_metering
+import qkit_governance
 
 data OrgConfig : oauth v1 {
     org_id: bytes(16),
@@ -24,7 +24,7 @@ data OrgConfig : oauth v1 {
     updated_at: u64,
 }
     store kv
-    govern lex global/org/polylabs/oauth/admin
+    govern lex global/org/polyqlabs/oauth/admin
     cortex {
         obfuscate [saml_metadata_hash, scim_endpoint_hash]
         infer on_write
@@ -44,7 +44,7 @@ data AppRegistration : oauth v1 {
     created_at: u64,
 }
     store kv
-    govern lex global/org/polylabs/oauth/admin
+    govern lex global/org/polyqlabs/oauth/admin
     cortex {
         redact [redirect_uris_hash]
         infer on_write
@@ -66,7 +66,7 @@ data ConditionalAccessPolicy : oauth v1 {
     created_at: u64,
 }
     store kv
-    govern lex global/org/polylabs/oauth/admin
+    govern lex global/org/polyqlabs/oauth/admin
     cortex {
         obfuscate [allowed_networks_hash]
         infer on_write
@@ -84,7 +84,7 @@ data ScimMapping : oauth v1 {
     deprovisioned_at: u64,
 }
     store kv
-    govern lex global/org/polylabs/oauth/admin
+    govern lex global/org/polyqlabs/oauth/admin
     cortex {
         obfuscate [external_user_id, internal_user_id]
         infer on_write
@@ -101,7 +101,7 @@ stream scim_events: event<ScimMapping>
 // --- Register a new organization ---
 circuit register_org(admin_id: bytes(16), name: bytes(256), domain: bytes(256), tier: u8, signing_sk: bytes(4896)) -> OrgConfig
     profile poly_framework_sensitive
-    lex global/org/polylabs/oauth/admin
+    lex global/org/polyqlabs/oauth/admin
     @precision C
     constant_time true
     @observe metrics: [orgs_registered, org_registration_latency_ns]
@@ -142,7 +142,7 @@ circuit register_org(admin_id: bytes(16), name: bytes(256), domain: bytes(256), 
     let _sig = mldsa_sign(signing_sk, payload)
     eslite_insert(org_id, org)
 
-    polykit_metering::record_usage(admin_id, "org_register", DimensionValues {
+    qkit_metering::record_usage(admin_id, "org_register", DimensionValues {
         executions: 1, hashes: 1, bandwidth: 0,
         storage: 512, observables: 1, proofs: 1, circuits: 0, mpc_sessions: 0,
     })
@@ -154,7 +154,7 @@ circuit register_org(admin_id: bytes(16), name: bytes(256), domain: bytes(256), 
 // --- Register an application within an organization ---
 circuit register_app(org_id: bytes(16), name: bytes(256), redirect_uris_hash: bytes(32), grant_types: u16, client_type: u8, tags: bytes(128), signing_sk: bytes(4896)) -> AppRegistration
     profile poly_framework_sensitive
-    lex global/org/polylabs/oauth/admin
+    lex global/org/polyqlabs/oauth/admin
     @precision C
     @observe metrics: [apps_registered, app_registration_latency_ns]
     invariant "org_exists" { eslite_exists(org_id) }
@@ -191,7 +191,7 @@ circuit register_app(org_id: bytes(16), name: bytes(256), redirect_uris_hash: by
 // --- Update conditional access policy ---
 circuit update_policy(policy: ConditionalAccessPolicy, signing_sk: bytes(4896)) -> ConditionalAccessPolicy
     profile poly_framework_sensitive
-    lex global/org/polylabs/oauth/admin
+    lex global/org/polyqlabs/oauth/admin
     @precision C
     @observe metrics: [policies_updated]
     invariant "org_exists" { eslite_exists(policy.org_id) }
@@ -207,7 +207,7 @@ circuit update_policy(policy: ConditionalAccessPolicy, signing_sk: bytes(4896)) 
 // --- Create a conditional access policy ---
 circuit create_conditional_access(org_id: bytes(16), name: bytes(256), app_tags: bytes(128), required_method: u8, max_risk: u16, action: u8, priority: u16, signing_sk: bytes(4896)) -> ConditionalAccessPolicy
     profile poly_framework_sensitive
-    lex global/org/polylabs/oauth/admin
+    lex global/org/polyqlabs/oauth/admin
     @precision C
     @observe metrics: [policies_created, policy_creation_latency_ns]
     invariant "org_exists" { eslite_exists(org_id) }
@@ -238,7 +238,7 @@ circuit create_conditional_access(org_id: bytes(16), name: bytes(256), app_tags:
     let _sig = mldsa_sign(signing_sk, serialize(policy))
     eslite_insert(policy_id, policy)
 
-    polykit_metering::record_usage(org_id, "policy_create", DimensionValues {
+    qkit_metering::record_usage(org_id, "policy_create", DimensionValues {
         executions: 1, hashes: 1, bandwidth: 0,
         storage: 256, observables: 1, proofs: 0, circuits: 0, mpc_sessions: 0,
     })
@@ -249,7 +249,7 @@ circuit create_conditional_access(org_id: bytes(16), name: bytes(256), app_tags:
 // --- Provision a user via SCIM 2.0 ---
 circuit provision_user(org_id: bytes(16), external_user_id: bytes(64), user_pk: bytes(2592), signing_sk: bytes(4896)) -> ScimMapping
     profile poly_framework_sensitive
-    lex global/org/polylabs/oauth/admin
+    lex global/org/polyqlabs/oauth/admin
     @precision C
     @observe metrics: [users_provisioned, scim_provision_latency_ns]
     invariant "org_exists" { eslite_exists(org_id) }
@@ -258,7 +258,7 @@ circuit provision_user(org_id: bytes(16), external_user_id: bytes(64), user_pk: 
     wasm_abi [eslite_insert, stream_emit, now]
 {
     let ts = now_ns() / 1000000
-    let internal_user_id = polykit_identity::derive_user_id(user_pk)
+    let internal_user_id = qkit_identity::derive_user_id(user_pk)
     let mapping_seed = concat(org_id, external_user_id, ts)
     let mapping_id = bit_slice(sha3_256(mapping_seed), 0, 128)
 
@@ -282,7 +282,7 @@ circuit provision_user(org_id: bytes(16), external_user_id: bytes(64), user_pk: 
 // --- Deprovision a user, revoking all sessions ---
 circuit deprovision_user(mapping: ScimMapping, signing_sk: bytes(4896)) -> ScimMapping
     profile poly_framework_sensitive
-    lex global/org/polylabs/oauth/admin
+    lex global/org/polyqlabs/oauth/admin
     @precision C
     @observe metrics: [users_deprovisioned, scim_deprovision_latency_ns]
     invariant "user_active" { mapping.status == 1 }
@@ -305,7 +305,7 @@ circuit deprovision_user(mapping: ScimMapping, signing_sk: bytes(4896)) -> ScimM
     let _sig = mldsa_sign(signing_sk, serialize(updated))
     eslite_insert(mapping.mapping_id, updated)
 
-    polykit_metering::record_usage(mapping.org_id, "user_deprovision", DimensionValues {
+    qkit_metering::record_usage(mapping.org_id, "user_deprovision", DimensionValues {
         executions: 1, hashes: 0, bandwidth: 0,
         storage: 0, observables: 2, proofs: 0, circuits: 0, mpc_sessions: 0,
     })

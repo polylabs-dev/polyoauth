@@ -1,12 +1,12 @@
-// Poly OAuth Metering — OAuth operation metering with 8D dimensions (v0.12.0)
+// Q OAuth Metering — OAuth operation metering with 8D dimensions (v0.12.0)
 //
 // Lex Architecture:
-//   esn/global/org/polylabs/oauth/metering
+//   esn/global/org/polyqlabs/oauth/metering
 //   Maps: auth [E,O], token [E,O], session [O,S], risk [E,C]
-//   Isolated metering under polylabs.oauth.metering lex namespace.
+//   Isolated metering under polyqlabs.oauth.metering lex namespace.
 //   Billing uses blinded payment tokens — no cross-product correlation.
 
-import polykit_metering
+import qkit_metering
 
 data OAuthMeteringRecord : oauth v1 {
     user_id: bytes(16),
@@ -16,7 +16,7 @@ data OAuthMeteringRecord : oauth v1 {
     timestamp_ms: u64,
 }
     store kv
-    govern lex global/org/polylabs/oauth/metering
+    govern lex global/org/polyqlabs/oauth/metering
     cortex {
         obfuscate [user_id]
         infer on_write
@@ -35,7 +35,7 @@ data OrgUsageSummary : oauth v1 {
     period_end_ms: u64,
 }
     store kv
-    govern lex global/org/polylabs/oauth/metering
+    govern lex global/org/polyqlabs/oauth/metering
     cortex {
         infer on_read
     }
@@ -48,7 +48,7 @@ data UserQuotaStatus : oauth v1 {
     quota_remaining_pct: u8,
 }
     store kv
-    govern lex global/org/polylabs/oauth/metering
+    govern lex global/org/polyqlabs/oauth/metering
     cortex {
         obfuscate [user_id]
         infer on_read
@@ -61,7 +61,7 @@ stream oauth_metering_events: event<OAuthMeteringRecord>
 // --- Meter an authentication operation [E,O] ---
 circuit meter_auth(user_id: bytes(16), org_id: bytes(16), auth_type: string) -> OAuthMeteringRecord
     profile poly_framework_standard
-    lex global/org/polylabs/oauth/metering
+    lex global/org/polyqlabs/oauth/metering
     @precision B
     @observe metrics: [auth_metered, auth_meter_latency_ns]
     meters [compute_cycles, memory_bytes]
@@ -79,7 +79,7 @@ circuit meter_auth(user_id: bytes(16), org_id: bytes(16), auth_type: string) -> 
         mpc_sessions: 0,
     }
 
-    polykit_metering::record_usage(user_id, auth_type, dims)
+    qkit_metering::record_usage(user_id, auth_type, dims)
 
     let record = OAuthMeteringRecord {
         user_id: user_id,
@@ -96,7 +96,7 @@ circuit meter_auth(user_id: bytes(16), org_id: bytes(16), auth_type: string) -> 
 // --- Meter a token operation [E,O] ---
 circuit meter_token(user_id: bytes(16), org_id: bytes(16), token_op: string) -> OAuthMeteringRecord
     profile poly_framework_standard
-    lex global/org/polylabs/oauth/metering
+    lex global/org/polyqlabs/oauth/metering
     @precision B
     @observe metrics: [token_metered, token_meter_latency_ns]
     meters [compute_cycles, memory_bytes]
@@ -123,7 +123,7 @@ circuit meter_token(user_id: bytes(16), org_id: bytes(16), token_op: string) -> 
         mpc_sessions: 0,
     }
 
-    polykit_metering::record_usage(user_id, token_op, dims)
+    qkit_metering::record_usage(user_id, token_op, dims)
 
     let record = OAuthMeteringRecord {
         user_id: user_id,
@@ -140,7 +140,7 @@ circuit meter_token(user_id: bytes(16), org_id: bytes(16), token_op: string) -> 
 // --- Meter a session operation [O,S] ---
 circuit meter_session(user_id: bytes(16), org_id: bytes(16), session_op: string) -> OAuthMeteringRecord
     profile poly_framework_standard
-    lex global/org/polylabs/oauth/metering
+    lex global/org/polyqlabs/oauth/metering
     @precision B
     @observe metrics: [session_metered]
     meters [compute_cycles, memory_bytes]
@@ -166,7 +166,7 @@ circuit meter_session(user_id: bytes(16), org_id: bytes(16), session_op: string)
         mpc_sessions: 0,
     }
 
-    polykit_metering::record_usage(user_id, session_op, dims)
+    qkit_metering::record_usage(user_id, session_op, dims)
 
     let record = OAuthMeteringRecord {
         user_id: user_id,
@@ -183,14 +183,14 @@ circuit meter_session(user_id: bytes(16), org_id: bytes(16), session_op: string)
 // --- Check user quota against tier limits ---
 circuit check_user_quota(user_id: bytes(16), tier: TierLimits) -> UserQuotaStatus
     profile poly_framework_standard
-    lex global/org/polylabs/oauth/metering
+    lex global/org/polyqlabs/oauth/metering
     @precision B
     @observe metrics: [quota_checks, quota_violations]
     monitor "quota_violation_rate" { quota_violations / quota_checks < 0.1 }
     property safety "quota_bounded" { output.quota_remaining_pct <= 100 }
 {
-    let current = polykit_metering::get_usage_summary(user_id)
-    let violations = polykit_metering::check_limits(current, tier)
+    let current = qkit_metering::get_usage_summary(user_id)
+    let violations = qkit_metering::check_limits(current, tier)
 
     let max_pct = parallel for i in 0..8 {
         if tier.limits[i] > 0 { current[i] * 100 / tier.limits[i] } else { 0 }
@@ -210,7 +210,7 @@ circuit check_user_quota(user_id: bytes(16), tier: TierLimits) -> UserQuotaStatu
 // --- Get aggregated usage for an entire organization ---
 circuit get_org_usage(org_id: bytes(16), period_start: u64, period_end: u64) -> OrgUsageSummary
     profile poly_framework_standard
-    lex global/org/polylabs/oauth/metering
+    lex global/org/polyqlabs/oauth/metering
     @precision B
     @observe metrics: [org_usage_queries]
     wasm_abi [eslite_query]

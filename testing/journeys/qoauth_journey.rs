@@ -1,6 +1,6 @@
-//! Poly OAuth Journey Tests
+//! Q OAuth Journey Tests
 //!
-//! End-to-end journey for Poly OAuth: biometric authentication via SPARK,
+//! End-to-end journey for Q OAuth: biometric authentication via SPARK,
 //! token granting, federated identity, risk assessment, session lifecycle,
 //! and blind telemetry — following the eStream Convoy pattern.
 
@@ -16,7 +16,7 @@ pub struct PolyoauthJourney;
 
 impl Journey for PolyoauthJourney {
     fn name(&self) -> &str {
-        "polyoauth_e2e"
+        "qoauth_e2e"
     }
 
     fn description(&self) -> &str {
@@ -26,16 +26,16 @@ impl Journey for PolyoauthJourney {
     fn parties(&self) -> Vec<JourneyParty> {
         vec![
             JourneyParty::new("alice")
-                .with_spark_context("poly-oauth-v1")
+                .with_spark_context("q-oauth-v1")
                 .with_role("authenticating_user"),
             JourneyParty::new("bob")
-                .with_spark_context("poly-oauth-v1")
+                .with_spark_context("q-oauth-v1")
                 .with_role("federated_user"),
             JourneyParty::new("risk_engine")
-                .with_spark_context("poly-oauth-v1")
+                .with_spark_context("q-oauth-v1")
                 .with_role("risk_assessor"),
             JourneyParty::new("relying_party")
-                .with_spark_context("poly-oauth-v1")
+                .with_spark_context("q-oauth-v1")
                 .with_role("service_provider"),
         ]
     }
@@ -46,7 +46,7 @@ impl Journey for PolyoauthJourney {
             JourneyStep::new("alice_initiates_biometric_auth")
                 .party("alice")
                 .action(StepAction::Execute(|ctx: &mut ConvoyContext| {
-                    let challenge = ctx.polyoauth().begin_auth(
+                    let challenge = ctx.qoauth().begin_auth(
                         "biometric_fido2",
                         "relying_party",
                     )?;
@@ -58,12 +58,12 @@ impl Journey for PolyoauthJourney {
                     assert!(challenge.pq_safe);
                     assert_eq!(challenge.method, "biometric_fido2");
 
-                    assert_metric_emitted!(ctx, "polyoauth.auth.initiated", {
+                    assert_metric_emitted!(ctx, "qoauth.auth.initiated", {
                         "method" => "biometric_fido2",
                         "pq_safe" => "true",
                     });
 
-                    assert_blinded!(ctx, "polyoauth.auth.initiated", {
+                    assert_blinded!(ctx, "qoauth.auth.initiated", {
                         field: "user_id",
                         blinding: "hmac_sha3",
                     });
@@ -79,7 +79,7 @@ impl Journey for PolyoauthJourney {
                 .action(StepAction::Execute(|ctx: &mut ConvoyContext| {
                     let challenge_id = ctx.get::<String>("auth_challenge_id");
 
-                    let spark_result = ctx.polyoauth().verify_spark(
+                    let spark_result = ctx.qoauth().verify_spark(
                         &challenge_id,
                         "ML-DSA-87",
                     )?;
@@ -91,17 +91,17 @@ impl Journey for PolyoauthJourney {
                     assert!(spark_result.liveness_confirmed);
                     assert!(spark_result.replay_protected);
 
-                    assert_metric_emitted!(ctx, "polyoauth.spark.verified", {
+                    assert_metric_emitted!(ctx, "qoauth.spark.verified", {
                         "algo" => "ML-DSA-87",
                         "liveness" => "confirmed",
                     });
 
-                    assert_povc_witness!(ctx, "polyoauth.spark_verify", {
+                    assert_povc_witness!(ctx, "qoauth.spark_verify", {
                         witness_type: "biometric_attestation",
                         attestation_id: &spark_result.attestation_id,
                     });
 
-                    assert_blinded!(ctx, "polyoauth.spark.verified", {
+                    assert_blinded!(ctx, "qoauth.spark.verified", {
                         field: "biometric_template",
                         blinding: "absent",
                     });
@@ -117,7 +117,7 @@ impl Journey for PolyoauthJourney {
                 .action(StepAction::Execute(|ctx: &mut ConvoyContext| {
                     let attestation_id = ctx.get::<String>("spark_attestation_id");
 
-                    let token = ctx.polyoauth().grant_token(
+                    let token = ctx.qoauth().grant_token(
                         &attestation_id,
                         &["openid", "profile", "email"],
                         3_600, // 1h TTL
@@ -131,17 +131,17 @@ impl Journey for PolyoauthJourney {
                     assert!(token.ttl_secs > 0);
                     assert_eq!(token.scopes, vec!["openid", "profile", "email"]);
 
-                    assert_metric_emitted!(ctx, "polyoauth.token.granted", {
+                    assert_metric_emitted!(ctx, "qoauth.token.granted", {
                         "scopes" => "openid,profile,email",
                         "ttl_secs" => "3600",
                     });
 
-                    assert_povc_witness!(ctx, "polyoauth.token_grant", {
+                    assert_povc_witness!(ctx, "qoauth.token_grant", {
                         witness_type: "token_issuance",
                         token_id: &token.token_id,
                     });
 
-                    assert_blinded!(ctx, "polyoauth.token.granted", {
+                    assert_blinded!(ctx, "qoauth.token.granted", {
                         field: "token_secret",
                         blinding: "absent",
                     });
@@ -155,7 +155,7 @@ impl Journey for PolyoauthJourney {
                 .party("bob")
                 .depends_on(&["token_granted"])
                 .action(StepAction::Execute(|ctx: &mut ConvoyContext| {
-                    let federation = ctx.polyoauth().federate(
+                    let federation = ctx.qoauth().federate(
                         "alice",
                         "relying_party",
                         &["openid", "profile"],
@@ -167,23 +167,23 @@ impl Journey for PolyoauthJourney {
                     assert!(federation.pq_key_exchange);
                     assert!(federation.cross_origin_isolated);
 
-                    let bob_spark = ctx.polyoauth().verify_spark(
+                    let bob_spark = ctx.qoauth().verify_spark(
                         &federation.challenge_id,
                         "ML-DSA-87",
                     )?;
                     assert!(bob_spark.verified);
 
-                    assert_metric_emitted!(ctx, "polyoauth.federation.established", {
+                    assert_metric_emitted!(ctx, "qoauth.federation.established", {
                         "pq_key_exchange" => "true",
                         "cross_origin" => "isolated",
                     });
 
-                    assert_povc_witness!(ctx, "polyoauth.federation", {
+                    assert_povc_witness!(ctx, "qoauth.federation", {
                         witness_type: "identity_federation",
                         federation_id: &federation.federation_id,
                     });
 
-                    assert_blinded!(ctx, "polyoauth.federation.established", {
+                    assert_blinded!(ctx, "qoauth.federation.established", {
                         field: "federated_user_id",
                         blinding: "hmac_sha3",
                     });
@@ -199,27 +199,27 @@ impl Journey for PolyoauthJourney {
                 .action(StepAction::Execute(|ctx: &mut ConvoyContext| {
                     let session_id = ctx.get::<String>("session_id");
 
-                    let risk = ctx.polyoauth().assess_risk(&session_id)?;
+                    let risk = ctx.qoauth().assess_risk(&session_id)?;
 
                     assert!(risk.score <= 1.0 && risk.score >= 0.0);
                     assert!(risk.factors_evaluated >= 3);
                     assert!(!risk.action_required || risk.score > 0.7);
 
-                    assert_metric_emitted!(ctx, "polyoauth.risk.assessed", {
+                    assert_metric_emitted!(ctx, "qoauth.risk.assessed", {
                         "factors_evaluated" => &risk.factors_evaluated.to_string(),
                     });
 
-                    assert_blinded!(ctx, "polyoauth.risk.assessed", {
+                    assert_blinded!(ctx, "qoauth.risk.assessed", {
                         field: "device_fingerprint",
                         blinding: "hmac_sha3",
                     });
 
-                    assert_blinded!(ctx, "polyoauth.risk.assessed", {
+                    assert_blinded!(ctx, "qoauth.risk.assessed", {
                         field: "ip_address",
                         blinding: "hmac_sha3",
                     });
 
-                    assert_povc_witness!(ctx, "polyoauth.risk_assess", {
+                    assert_povc_witness!(ctx, "qoauth.risk_assess", {
                         witness_type: "risk_evaluation",
                         session_id: &session_id,
                     });
@@ -236,13 +236,13 @@ impl Journey for PolyoauthJourney {
                     let session_id = ctx.get::<String>("session_id");
                     let token_id = ctx.get::<String>("access_token_id");
 
-                    ctx.polyoauth().advance_clock(3_601); // past 1h TTL
+                    ctx.qoauth().advance_clock(3_601); // past 1h TTL
 
-                    let token_status = ctx.polyoauth().validate_token(&token_id)?;
+                    let token_status = ctx.qoauth().validate_token(&token_id)?;
                     assert!(token_status.expired);
                     assert!(!token_status.valid);
 
-                    let session_status = ctx.polyoauth().session_status(&session_id)?;
+                    let session_status = ctx.qoauth().session_status(&session_id)?;
                     assert!(session_status.ended);
                     assert!(session_status.artifacts_cleaned);
 
@@ -257,11 +257,11 @@ impl Journey for PolyoauthJourney {
                     assert!(merkle.root_hash_valid);
                     assert!(merkle.series_count >= 1);
 
-                    assert_metric_emitted!(ctx, "polyoauth.session.expired", {
+                    assert_metric_emitted!(ctx, "qoauth.session.expired", {
                         "artifacts_cleaned" => "true",
                     });
 
-                    assert_povc_witness!(ctx, "polyoauth.session_expire", {
+                    assert_povc_witness!(ctx, "qoauth.session_expire", {
                         witness_type: "session_cleanup",
                         session_id: &session_id,
                     });
@@ -275,7 +275,7 @@ impl Journey for PolyoauthJourney {
                 .party("alice")
                 .depends_on(&["session_expiry"])
                 .action(StepAction::Execute(|ctx: &mut ConvoyContext| {
-                    let telemetry = ctx.streamsight().drain_telemetry("poly-oauth-v1");
+                    let telemetry = ctx.streamsight().drain_telemetry("q-oauth-v1");
 
                     for event in &telemetry {
                         assert_blinded!(ctx, &event.event_type, {
@@ -295,8 +295,8 @@ impl Journey for PolyoauthJourney {
                     }
 
                     let cortex = CortexVisibility::new(ctx);
-                    cortex.assert_redacted("polyoauth", RedactPolicy::ContentFields)?;
-                    cortex.assert_obfuscated("polyoauth", ObfuscatePolicy::PartyIdentifiers)?;
+                    cortex.assert_redacted("qoauth", RedactPolicy::ContentFields)?;
+                    cortex.assert_obfuscated("qoauth", ObfuscatePolicy::PartyIdentifiers)?;
 
                     assert!(telemetry.len() >= 7, "Expected at least 7 telemetry events");
 
@@ -306,8 +306,8 @@ impl Journey for PolyoauthJourney {
                         .collect();
                     for ns in &namespaces {
                         assert!(
-                            ns.starts_with("poly-oauth-v1"),
-                            "Telemetry must stay within poly-oauth-v1 namespace, found: {}",
+                            ns.starts_with("q-oauth-v1"),
+                            "Telemetry must stay within q-oauth-v1 namespace, found: {}",
                             ns,
                         );
                     }
@@ -321,16 +321,16 @@ impl Journey for PolyoauthJourney {
     fn metrics(&self) -> JourneyMetrics {
         JourneyMetrics {
             expected_events: vec![
-                "polyoauth.auth.initiated",
-                "polyoauth.spark.verified",
-                "polyoauth.token.granted",
-                "polyoauth.federation.established",
-                "polyoauth.risk.assessed",
-                "polyoauth.session.expired",
+                "qoauth.auth.initiated",
+                "qoauth.spark.verified",
+                "qoauth.token.granted",
+                "qoauth.federation.established",
+                "qoauth.risk.assessed",
+                "qoauth.session.expired",
             ],
             max_duration_ms: 70_000,
             required_povc_witnesses: 6,
-            lex_namespace: "poly-oauth-v1",
+            lex_namespace: "q-oauth-v1",
         }
     }
 }
@@ -341,9 +341,9 @@ mod tests {
     use estream_test::convoy::ConvoyRunner;
 
     #[tokio::test]
-    async fn run_polyoauth_journey() {
+    async fn run_qoauth_journey() {
         let runner = ConvoyRunner::new()
-            .with_streamsight("poly-oauth-v1")
+            .with_streamsight("q-oauth-v1")
             .with_stratum()
             .with_cortex()
             .with_spark();

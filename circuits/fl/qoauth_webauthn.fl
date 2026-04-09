@@ -1,7 +1,7 @@
-// Poly OAuth WebAuthn — FIDO2/WebAuthn registration and assertion flows (v0.12.0)
+// Q OAuth WebAuthn — FIDO2/WebAuthn registration and assertion flows (v0.12.0)
 //
 // Lex Architecture:
-//   esn/global/org/polylabs/oauth/webauthn
+//   esn/global/org/polyqlabs/oauth/webauthn
 //   FIDO2 registration: user creates a PQ credential bound to their authenticator.
 //   WebAuthn assertion: user proves possession of their credential for login.
 //   All operations constant-time to prevent timing side channels.
@@ -11,8 +11,8 @@
 //   - PQ attestation (ML-DSA-87 signed attestation objects)
 //   - Device-bound keys (non-exportable, hardware-backed)
 
-import polykit_identity
-import polykit_metering
+import qkit_identity
+import qkit_metering
 
 // ── Data declarations ───────────────────────────────────────────
 
@@ -32,7 +32,7 @@ data WebAuthnCredential : oauth v1 {
     is_backed_up: bool,
 }
     store kv
-    govern lex global/org/polylabs/oauth/webauthn
+    govern lex global/org/polyqlabs/oauth/webauthn
     cortex {
         redact [public_key]
         obfuscate [user_id]
@@ -55,7 +55,7 @@ data AttestationObject : oauth v1 {
     challenge: bytes(32),
 }
     store kv
-    govern lex global/org/polylabs/oauth/webauthn
+    govern lex global/org/polyqlabs/oauth/webauthn
     cortex {
         redact [att_stmt_signature, credential_public_key]
         infer on_write
@@ -75,7 +75,7 @@ data AssertionResponse : oauth v1 {
     origin_hash: bytes(32),
 }
     store kv
-    govern lex global/org/polylabs/oauth/webauthn
+    govern lex global/org/polyqlabs/oauth/webauthn
     cortex {
         redact [signature]
         obfuscate [user_handle]
@@ -129,7 +129,7 @@ circuit create_registration_challenge(
     authenticator_selection: u8,
 ) -> (bytes(32), u64)
     profile poly_framework_sensitive
-    lex global/org/polylabs/oauth/webauthn
+    lex global/org/polyqlabs/oauth/webauthn
     @precision C
     constant_time true
     @observe metrics: [registration_challenges_created, challenge_create_latency_ns]
@@ -171,7 +171,7 @@ circuit process_attestation(
     expected_origin_hash: bytes(32),
 ) -> WebAuthnCredential
     profile poly_framework_sensitive
-    lex global/org/polylabs/oauth/webauthn
+    lex global/org/polyqlabs/oauth/webauthn
     @precision C
     constant_time true
     @observe metrics: [attestations_processed, attestation_failures, attestation_latency_ns]
@@ -218,7 +218,7 @@ circuit process_attestation(
     eslite_insert("webauthn_credentials", credential.credential_id, credential)
     emit(webauthn_registration_events, credential)
 
-    polykit_metering::record_usage(credential.user_id, "webauthn_register", DimensionValues {
+    qkit_metering::record_usage(credential.user_id, "webauthn_register", DimensionValues {
         executions: 1, hashes: 3, bandwidth: 0,
         storage: 512, observables: 1, proofs: 1, circuits: 0, mpc_sessions: 0,
     })
@@ -233,7 +233,7 @@ circuit create_assertion_challenge(
     user_verification: u8,
 ) -> (bytes(32), u64)
     profile poly_framework_sensitive
-    lex global/org/polylabs/oauth/webauthn
+    lex global/org/polyqlabs/oauth/webauthn
     @precision C
     constant_time true
     @observe metrics: [assertion_challenges_created]
@@ -268,7 +268,7 @@ circuit verify_assertion(
     expected_origin_hash: bytes(32),
 ) -> (bool, bytes(16))
     profile poly_framework_sensitive
-    lex global/org/polylabs/oauth/webauthn
+    lex global/org/polyqlabs/oauth/webauthn
     @precision C
     constant_time true
     @observe metrics: [assertions_verified, assertion_failures, assertion_latency_ns]
@@ -311,7 +311,7 @@ circuit verify_assertion(
 
     emit(webauthn_assertion_events, response)
 
-    polykit_metering::record_usage(credential.user_id, "webauthn_assert", DimensionValues {
+    qkit_metering::record_usage(credential.user_id, "webauthn_assert", DimensionValues {
         executions: 1, hashes: 2, bandwidth: 0,
         storage: 64, observables: 1, proofs: 1, circuits: 0, mpc_sessions: 0,
     })
@@ -326,7 +326,7 @@ circuit bridge_to_spark(
     signing_sk: bytes(4896),
 ) -> bool
     profile poly_framework_sensitive
-    lex global/org/polylabs/oauth/webauthn
+    lex global/org/polyqlabs/oauth/webauthn
     @precision C
     constant_time true
     @observe metrics: [spark_bridges_created]
@@ -353,8 +353,8 @@ circuit bridge_to_spark(
 
 test golden "create_registration_challenge_basic" {
     input {
-        rp_id: "auth.polylabs.dev"
-        rp_name: "Poly Labs"
+        rp_id: "auth.polyqlabs.dev"
+        rp_name: "PolyQ Labs"
         user_id: hex("01" * 16)
         user_name: "alice"
         user_display_name: "Alice"
@@ -375,14 +375,14 @@ test golden "verify_assertion_basic" {
             signature: hex("CC" * 4627),
             user_handle: hex("01" * 16),
             client_data_hash: hex("DD" * 32),
-            rp_id_hash: sha3_256("auth.polylabs.dev"),
+            rp_id_hash: sha3_256("auth.polyqlabs.dev"),
             flags: 0x05,
             sign_count: 1,
             challenge: hex("EE" * 32),
             origin_hash: hex("FF" * 32),
         }
         expected_challenge: hex("EE" * 32)
-        expected_rp_id: "auth.polylabs.dev"
+        expected_rp_id: "auth.polyqlabs.dev"
         expected_origin_hash: hex("FF" * 32)
     }
     assert {

@@ -1,10 +1,10 @@
-/// Poly OAuth Identity Federation Graph (v0.12.0)
+/// Q OAuth Identity Federation Graph (v0.12.0)
 /// Stratum graph storage + Cortex AI governance
-/// govern lex global/org/polylabs/oauth
+/// govern lex global/org/polyqlabs/oauth
 
-import polykit_identity
-import polykit_metering
-import polykit_governance
+import qkit_identity
+import qkit_metering
+import qkit_governance
 
 // ── Enums ────────────────────────────────────────────────────────
 
@@ -53,7 +53,7 @@ data OrganizationNode : oauth v1 {
     updated_at: u64,
 }
     store graph
-    govern lex global/org/polylabs/oauth
+    govern lex global/org/polyqlabs/oauth
     cortex {
         obfuscate [admin_id, billing_email]
         infer on_write
@@ -74,7 +74,7 @@ data ApplicationNode : oauth v1 {
     created_at: u64,
 }
     store graph
-    govern lex global/org/polylabs/oauth
+    govern lex global/org/polyqlabs/oauth
     cortex {
         redact [client_secret_hash]
         obfuscate [owner_id]
@@ -96,7 +96,7 @@ data UserSessionNode : oauth v1 {
     expires_at: u64,
 }
     store graph
-    govern lex global/org/polylabs/oauth
+    govern lex global/org/polyqlabs/oauth
     cortex {
         redact [token_hash, device_fingerprint]
         obfuscate [user_id, ip_address]
@@ -116,7 +116,7 @@ data ServiceProviderNode : oauth v1 {
     created_at: u64,
 }
     store graph
-    govern lex global/org/polylabs/oauth
+    govern lex global/org/polyqlabs/oauth
     cortex {
         obfuscate [admin_contact]
         infer on_read
@@ -217,7 +217,7 @@ circuit create_org(
     billing_email: string,
     signing_sk: bytes(4896),
 ) -> OrganizationNode
-    lex global/org/polylabs/oauth
+    lex global/org/polyqlabs/oauth
     @status production
     @precision C
     @attested true
@@ -231,7 +231,7 @@ circuit create_org(
     meters [compute_cycles, memory_bytes]
     wasm_abi [eslite_insert, now]
 {
-    let admin_id = polykit_identity::derive_user_id(admin_pk)
+    let admin_id = qkit_identity::derive_user_id(admin_pk)
     let ts = now_ns() / 1000000
     let org_seed = concat(admin_id, domain, csprng(16), ts)
     let org_id = sha3_256(org_seed)
@@ -259,7 +259,7 @@ circuit create_org(
     overlay_set(identity_federation, org_id, app_count, 0)
     overlay_set(identity_federation, org_id, sp_count, 0)
 
-    polykit_metering::record_usage(admin_id, "graph_org_create", DimensionValues {
+    qkit_metering::record_usage(admin_id, "graph_org_create", DimensionValues {
         executions: 1, hashes: 1, bandwidth: 0,
         storage: 512, observables: 4, proofs: 1, circuits: 0, mpc_sessions: 0,
     })
@@ -279,7 +279,7 @@ circuit register_app(
     tags: string,
     signing_sk: bytes(4896),
 ) -> ApplicationNode
-    lex global/org/polylabs/oauth
+    lex global/org/polyqlabs/oauth
     @status production
     @precision C
     @attested true
@@ -334,7 +334,7 @@ circuit create_session(
     app_id: string,
     signing_sk: bytes(4896),
 ) -> UserSessionNode
-    lex global/org/polylabs/oauth
+    lex global/org/polyqlabs/oauth
     @status production
     @precision C
     @attested true
@@ -385,7 +385,7 @@ circuit create_session(
 
     eslm_feed(auth_anomaly, serialize(session), risk_score)
 
-    polykit_metering::record_usage(user_id, "graph_session_create", DimensionValues {
+    qkit_metering::record_usage(user_id, "graph_session_create", DimensionValues {
         executions: 1, hashes: 3, bandwidth: 0,
         storage: 512, observables: 4, proofs: 1, circuits: 0, mpc_sessions: 0,
     })
@@ -402,7 +402,7 @@ circuit register_sp(
     name_id_format: u8,
     signing_sk: bytes(4896),
 ) -> ServiceProviderNode
-    lex global/org/polylabs/oauth
+    lex global/org/polyqlabs/oauth
     @status production
     @precision C
     @attested true
@@ -453,7 +453,7 @@ circuit authorize_app(
     expires_at: u64,
     signing_sk: bytes(4896),
 ) -> AuthorizesEdge
-    lex global/org/polylabs/oauth
+    lex global/org/polyqlabs/oauth
     @status production
     @precision C
     @attested true
@@ -491,7 +491,7 @@ circuit establish_federation(
     metadata_exchange_hash: string,
     signing_sk: bytes(4896),
 ) -> FederatesWithEdge
-    lex global/org/polylabs/oauth
+    lex global/org/polyqlabs/oauth
     @status production
     @precision C
     @attested true
@@ -526,7 +526,7 @@ circuit evaluate_risk(
     network_risk_flags: u16,
     new_risk_score: u16,
 ) -> u16
-    lex global/org/polylabs/oauth
+    lex global/org/polyqlabs/oauth
     @status production
     @precision B
     @attested true
@@ -561,7 +561,7 @@ circuit get_org(
     graph_id: bytes(32),
     org_id: string,
 ) -> option<OrganizationNode>
-    lex global/org/polylabs/oauth
+    lex global/org/polyqlabs/oauth
     @status production
     @precision B
     @observe metrics: [org_queries]
@@ -573,7 +573,7 @@ circuit get_sessions_for_user(
     graph_id: bytes(32),
     user_id: string,
 ) -> list<UserSessionNode>
-    lex global/org/polylabs/oauth
+    lex global/org/polyqlabs/oauth
     @status production
     @precision B
     @observe metrics: [session_queries, session_count]
@@ -585,7 +585,7 @@ circuit get_apps_for_org(
     graph_id: bytes(32),
     org_id: string,
 ) -> list<ApplicationNode>
-    lex global/org/polylabs/oauth
+    lex global/org/polyqlabs/oauth
     @status production
     @precision B
     @observe metrics: [app_queries, app_count]
@@ -597,7 +597,7 @@ circuit get_sps_for_org(
     graph_id: bytes(32),
     org_id: string,
 ) -> list<ServiceProviderNode>
-    lex global/org/polylabs/oauth
+    lex global/org/polyqlabs/oauth
     @status production
     @precision B
     @observe metrics: [sp_queries, sp_count]
@@ -611,7 +611,7 @@ circuit snapshot_org_quantum_state(
     org_id: string,
     signing_sk: bytes(4896),
 ) -> string
-    lex global/org/polylabs/oauth
+    lex global/org/polyqlabs/oauth
     @status production
     @precision C
     @attested true

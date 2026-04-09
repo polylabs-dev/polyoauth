@@ -1,4 +1,4 @@
-/// Poly OAuth Platform Health — Blind relay telemetry for auth sessions (v0.12.0)
+/// Q OAuth Platform Health — Blind relay telemetry for auth sessions (v0.12.0)
 ///
 /// Aggregates platform-wide health metrics under zero-linkage privacy:
 ///   - SPARK identity blinded via HKDF("poly-oauth-telemetry-v1")
@@ -7,13 +7,13 @@
 ///   - Temporal aggregation (1h minimum window)
 ///
 /// Lex Architecture:
-///   esn/global/org/polylabs/oauth
+///   esn/global/org/polyqlabs/oauth
 ///     └── sub_lex auth_session fan_in  ← per-session health; aggregates fan up
 ///
-/// govern lex global/org/polylabs/oauth
+/// govern lex global/org/polyqlabs/oauth
 
-import polykit_blind_telemetry from "../../polykit/circuits/fl/polykit_blind_telemetry.fl"
-import polykit_metering from "../../polykit/circuits/fl/polykit_metering.fl"
+import qkit_blind_telemetry from "../../qkit/circuits/fl/qkit_blind_telemetry.fl"
+import qkit_metering from "../../qkit/circuits/fl/qkit_metering.fl"
 
 // ── Data Declarations with Stratum + Cortex ─────────────────────────
 
@@ -33,7 +33,7 @@ data PlatformMetrics : oauth v1 {
     collected_at: u64,
 }
     store kv
-    govern lex global/org/polylabs/oauth
+    govern lex global/org/polyqlabs/oauth
     cortex {
         obfuscate [blinded_oauth_id]
         infer on_write
@@ -55,7 +55,7 @@ data OAuthHealthSnapshot : oauth v1 {
     baseline_sessions: u64,
 }
     store kv
-    govern lex global/org/polylabs/oauth
+    govern lex global/org/polyqlabs/oauth
     cortex {
         infer on_read
     }
@@ -86,7 +86,7 @@ series oauth_health_series: oauth_health_events
 
 // ── Core Circuit: Platform Health ───────────────────────────────────
 
-circuit polyoauth_platform_health(
+circuit qoauth_platform_health(
     spark_id: bytes(32),
     active_user_count: u32,
     window_start_ms: u64,
@@ -100,7 +100,7 @@ circuit polyoauth_platform_health(
     auth_failures: u64,
 ) -> option<PlatformMetrics>
     profile poly_framework_sensitive
-    lex global/org/polylabs/oauth {
+    lex global/org/polyqlabs/oauth {
         governance hierarchical
         audit_trail true
         sub_lex auth_session fan_in
@@ -110,7 +110,7 @@ circuit polyoauth_platform_health(
     @observe true
     @attested true
     constant_time true
-    @serialize "verify/polyoauth_platform_health.esz"
+    @serialize "verify/qoauth_platform_health.esz"
     li_feed full_flir true, optimized_ir true, optimization_metadata true
     @observe metrics: [health_snapshots_emitted, health_snapshots_rejected, oauth_anomalies_detected]
     monitor "auth_failure_rate" { auth_failures / auth_attempts < 0.1 }
@@ -127,21 +127,21 @@ circuit polyoauth_platform_health(
 {
     let ts = now_ns() / 1000000
 
-    let blinded_id = polykit_blind_telemetry::blind_user_id(spark_id, "poly-oauth-telemetry-v1")
+    let blinded_id = qkit_blind_telemetry::blind_user_id(spark_id, "poly-oauth-telemetry-v1")
 
-    let (cohort_status, cohort_ok) = polykit_blind_telemetry::enforce_cohort(active_user_count, 50)
+    let (cohort_status, cohort_ok) = qkit_blind_telemetry::enforce_cohort(active_user_count, 50)
     if !cohort_ok { return none }
 
-    let window_ok = polykit_blind_telemetry::enforce_aggregate_window(window_start_ms, window_end_ms, 3600000)
+    let window_ok = qkit_blind_telemetry::enforce_aggregate_window(window_start_ms, window_end_ms, 3600000)
     if !window_ok { return none }
 
-    let noised_queries = polykit_blind_telemetry::inject_noise(platform_queries, 1, 1000)
-    let noised_sessions = polykit_blind_telemetry::inject_noise(active_sessions, 1, 1000)
-    let noised_auth = polykit_blind_telemetry::inject_noise(auth_attempts, 1, 1000)
-    let noised_tokens = polykit_blind_telemetry::inject_noise(token_grants, 1, 1000)
-    let noised_biometric = polykit_blind_telemetry::inject_noise(biometric_verifications, 1, 1000)
-    let noised_federation = polykit_blind_telemetry::inject_noise(federation_requests, 1, 1000)
-    let noised_failures = polykit_blind_telemetry::inject_noise(auth_failures, 1, 1000)
+    let noised_queries = qkit_blind_telemetry::inject_noise(platform_queries, 1, 1000)
+    let noised_sessions = qkit_blind_telemetry::inject_noise(active_sessions, 1, 1000)
+    let noised_auth = qkit_blind_telemetry::inject_noise(auth_attempts, 1, 1000)
+    let noised_tokens = qkit_blind_telemetry::inject_noise(token_grants, 1, 1000)
+    let noised_biometric = qkit_blind_telemetry::inject_noise(biometric_verifications, 1, 1000)
+    let noised_federation = qkit_blind_telemetry::inject_noise(federation_requests, 1, 1000)
+    let noised_failures = qkit_blind_telemetry::inject_noise(auth_failures, 1, 1000)
 
     let failure_anomaly = streamsight_anomaly(auth_failures)
     let auth_baseline = streamsight_baseline("auth_attempts")
@@ -194,7 +194,7 @@ circuit polyoauth_platform_health(
 
 // ── Secondary Circuit: Anomaly Check with Cortex AI Feed ────────────
 
-circuit polyoauth_anomaly_check(
+circuit qoauth_anomaly_check(
     window_start_ms: u64,
     window_end_ms: u64,
     auth_attempts: u64,
@@ -203,7 +203,7 @@ circuit polyoauth_anomaly_check(
     biometric_verifications: u64,
 ) -> OAuthHealthStatus
     profile poly_framework_standard
-    lex global/org/polylabs/oauth {
+    lex global/org/polyqlabs/oauth {
         sub_lex auth_session fan_in
     }
     @status production

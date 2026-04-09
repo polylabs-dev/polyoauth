@@ -1,16 +1,16 @@
-# Poly OAuth Architecture
+# Q OAuth Architecture
 
 **Version**: 3.0
 **Date**: February 2026
 **Platform**: eStream v0.9.1
-**Upstream**: PolyKit v0.3.0, eStream scatter-cas, graph/DAG constructs
+**Upstream**: QKit v0.3.0, eStream scatter-cas, graph/DAG constructs
 **Build Pipeline**: FastLang (.fl) → FLIR → Rust/WASM codegen → .escd
 
 ---
 
 ## Overview
 
-Poly OAuth is the first post-quantum biometric OAuth/OIDC identity provider. It extends eStream's SPARK Auth into a standards-compliant OAuth 2.0 / OpenID Connect / SAML 2.0 identity provider with PQ biometric authentication — no passwords, no TOTP, no SMS codes. Tokens are ML-DSA-87 signed assertions (not classical JWTs), sessions are scatter-stored, and anomaly detection runs via ESLM. Once an enterprise integrates Poly OAuth for SSO, the switching cost is enormous.
+Q OAuth is the first post-quantum biometric OAuth/OIDC identity provider. It extends eStream's SPARK Auth into a standards-compliant OAuth 2.0 / OpenID Connect / SAML 2.0 identity provider with PQ biometric authentication — no passwords, no TOTP, no SMS codes. Tokens are ML-DSA-87 signed assertions (not classical JWTs), sessions are scatter-stored, and anomaly detection runs via ESLM. Once an enterprise integrates Q OAuth for SSO, the switching cost is enormous.
 
 ### What Changed in v3.0
 
@@ -19,20 +19,20 @@ Poly OAuth is the first post-quantum biometric OAuth/OIDC identity provider. It 
 | Identity model | Flat user/org store | `graph identity_federation` with typed overlays |
 | Token model | FLIR-signed blob | `dag token_chain` with acyclic enforcement + ML-DSA-87 signing |
 | Session state | Implicit | `state_machine session_lifecycle` (INITIATED → REVOKED) |
-| Circuit format | FLIR YAML (`circuit.flir.yaml`) | FastLang `.fl` with PolyKit profiles |
-| RBAC | Per-circuit annotations | eStream `rbac.fl` composed via PolyKit |
+| Circuit format | FLIR YAML (`circuit.flir.yaml`) | FastLang `.fl` with QKit profiles |
+| RBAC | Per-circuit annotations | eStream `rbac.fl` composed via QKit |
 | Platform | eStream v0.8.1 | eStream v0.9.1 |
 
 ---
 
 ## Zero-Linkage Privacy
 
-Poly OAuth operates under the Poly Labs zero-linkage privacy architecture:
+Q OAuth operates under the PolyQ Labs zero-linkage privacy architecture:
 
-- **HKDF context**: `poly-oauth-v1` — produces `user_id`, signing key, and encryption key that cannot be correlated with any other Poly product
-- **Lex namespace**: `esn/global/org/polylabs/oauth` — completely isolated from other product namespaces
-- **StreamSight**: Telemetry stays within `polylabs.oauth.*` lex paths
-- **Metering**: Own `metering_graph` instance under `polylabs.oauth.metering` lex
+- **HKDF context**: `q-oauth-v1` — produces `user_id`, signing key, and encryption key that cannot be correlated with any other Poly product
+- **Lex namespace**: `esn/global/org/polyqlabs/oauth` — completely isolated from other product namespaces
+- **StreamSight**: Telemetry stays within `polyqlabs.oauth.*` lex paths
+- **Metering**: Own `metering_graph` instance under `polyqlabs.oauth.metering` lex
 - **Billing**: Tier checked via blinded token status, not cross-product identity
 
 ---
@@ -45,7 +45,7 @@ Poly OAuth operates under the Poly Labs zero-linkage privacy architecture:
 SPARK biometric → Secure Enclave/TEE → master_seed (in WASM, never exposed to JS)
                                             │
                                             ▼
-                                   HKDF-SHA3-256(master_seed, "poly-oauth-v1")
+                                   HKDF-SHA3-256(master_seed, "q-oauth-v1")
                                             │
                                             ├── ML-DSA-87 signing key pair
                                             │   (token signing, session management, audit entries)
@@ -60,11 +60,11 @@ SPARK biometric → Secure Enclave/TEE → master_seed (in WASM, never exposed t
 user_id = SHA3-256(spark_ml_dsa_87_public_key)[0..16]   # 16-byte truncated hash
 ```
 
-All stream topics, organization membership, and session state reference this SPARK-derived `user_id`. There are no usernames, emails, or phone numbers at the identity layer. This `user_id` is unique to Poly OAuth and cannot be linked to identities in other Poly products.
+All stream topics, organization membership, and session state reference this SPARK-derived `user_id`. There are no usernames, emails, or phone numbers at the identity layer. This `user_id` is unique to Q OAuth and cannot be linked to identities in other Q products.
 
 ### No Passwords
 
-| Traditional OAuth/IdP | Poly OAuth |
+| Traditional OAuth/IdP | Q OAuth |
 |-----------------------|-----------|
 | Password + TOTP → session token | SPARK biometric → Secure Enclave → ML-DSA-87 challenge-response |
 | Phishable (password to steal) | Cannot be phished (biometric, not typed) |
@@ -90,13 +90,13 @@ All stream topics, organization membership, and session state reference this SPA
 └──────────────────────┼────────────────────────────────────────────────┘
                        │
 ┌──────────────────────┼────────────────────────────────────────────────┐
-│               Poly OAuth Server                                        │
+│               Q OAuth Server                                        │
 │                      │                                                 │
 │  ┌───────────────────┴──────────────────────────────────────────────┐ │
 │  │  FastLang Circuits (WASM via .escd)                                │ │
 │  │                                                                    │ │
-│  │  polyoauth_auth.fl │ polyoauth_token.fl │ polyoauth_session.fl    │ │
-│  │  polyoauth_saml.fl │ polyoauth_scim.fl  │ polyoauth_metering.fl   │ │
+│  │  qoauth_auth.fl │ qoauth_token.fl │ qoauth_session.fl    │ │
+│  │  qoauth_saml.fl │ qoauth_scim.fl  │ qoauth_metering.fl   │ │
 │  │  (all ML-DSA-87 signed .escd packages, StreamSight-annotated)     │ │
 │  └──────────────────────────┬───────────────────────────────────────┘ │
 │                              │                                         │
@@ -105,8 +105,8 @@ All stream topics, organization membership, and session state reference this SPA
 │  │                                                                    │ │
 │  │  graph identity_federation — org/app/user/SP as federated graph   │ │
 │  │  dag   token_chain         — PQ-signed token DAG (not JWT)        │ │
-│  │  graph metering_graph      — per-app 8D usage (from PolyKit)      │ │
-│  │  graph user_graph          — per-product identity (from PolyKit)   │ │
+│  │  graph metering_graph      — per-app 8D usage (from QKit)      │ │
+│  │  graph user_graph          — per-product identity (from QKit)   │ │
 │  └──────────────────────────┬───────────────────────────────────────┘ │
 │                              │                                         │
 │  ┌──────────────────────────┴───────────────────────────────────────┐ │
@@ -128,8 +128,8 @@ All stream topics, organization membership, and session state reference this SPA
 │  ┌────────────────────────────┴─────────────────────────────────────┐ │
 │  │  Lattice-Hosted Circuits                                           │ │
 │  │                                                                    │ │
-│  │  polyoauth_session_sync.fl │ polyoauth_federation_relay.fl        │ │
-│  │  polyoauth_metering.fl     │ scatter-cas runtime                  │ │
+│  │  qoauth_session_sync.fl │ qoauth_federation_relay.fl        │ │
+│  │  qoauth_metering.fl     │ scatter-cas runtime                  │ │
 │  └────┬───────────┬──────────────┬──────────────────────────────────┘ │
 │       │           │              │                                     │
 │  ┌────┴──────────────────────────────────────────────────────────┐   │
@@ -155,11 +155,11 @@ All stream topics, organization membership, and session state reference this SPA
 ### OAuth 2.0 Authorization Code Flow (with SPARK)
 
 ```
-1. App redirects user to Poly OAuth /authorize
-2. Poly OAuth displays QR code (or pushes to known device)
+1. App redirects user to Q OAuth /authorize
+2. Q OAuth displays QR code (or pushes to known device)
 3. User's device: SPARK biometric prompt (face/fingerprint)
 4. Device signs challenge with ML-DSA-87 private key
-5. Poly OAuth verifies ML-DSA-87 signature
+5. Q OAuth verifies ML-DSA-87 signature
 6. ESLM evaluates risk (new device? unusual location? geo-velocity?)
 7. If risk acceptable: issue authorization code
 8. App exchanges code for tokens at /token
@@ -168,7 +168,7 @@ All stream topics, organization membership, and session state reference this SPA
 
 ### Key Difference from Classical OAuth
 
-| Step | Classical | Poly OAuth |
+| Step | Classical | Q OAuth |
 |------|-----------|-----------|
 | Authentication | Password + TOTP | **SPARK biometric** (no password) |
 | Token format | RSA/ECDSA-signed JWT | **ML-DSA-87 signed PQ-JWT** (quantum-safe assertion) |
@@ -206,7 +206,7 @@ All stream topics, organization membership, and session state reference this SPA
 - Event notifications (push)
 
 ### FIDO2/WebAuthn Bridge
-- Poly OAuth accepts FIDO2/WebAuthn as a secondary auth method
+- Q OAuth accepts FIDO2/WebAuthn as a secondary auth method
 - SPARK biometric is primary; hardware keys as backup
 - Bridges SPARK to WebAuthn for apps that already support it
 
@@ -214,7 +214,7 @@ All stream topics, organization membership, and session state reference this SPA
 
 ## Graph/DAG Constructs
 
-### Identity Federation Graph (`polyoauth_identity_graph.fl`)
+### Identity Federation Graph (`qoauth_identity_graph.fl`)
 
 The identity model is a typed graph with Stratum storage and Cortex AI governance. Organizations, applications, user sessions, and service providers are `data` nodes with field-level privacy policies; authorization relationships, membership, sessions, and federation are edges. Overlays provide real-time federation state (session counts, active users, risk scores) without mutating the base graph.
 
@@ -234,7 +234,7 @@ data OrganizationNode : app v1 {
     updated_at: u64,
 }
     store graph
-    govern lex esn/global/org/polylabs/oauth
+    govern lex esn/global/org/polyqlabs/oauth
     cortex {
         obfuscate [admin_id, billing_email]
         infer on_write
@@ -255,7 +255,7 @@ data ApplicationNode : app v1 {
     created_at: u64,
 }
     store graph
-    govern lex esn/global/org/polylabs/oauth
+    govern lex esn/global/org/polyqlabs/oauth
     cortex {
         redact [client_secret_hash]
         obfuscate [owner_id]
@@ -277,7 +277,7 @@ data UserSessionNode : app v1 {
     expires_at: u64,
 }
     store graph
-    govern lex esn/global/org/polylabs/oauth
+    govern lex esn/global/org/polyqlabs/oauth
     cortex {
         redact [token_hash, device_fingerprint]
         obfuscate [user_id, ip_address]
@@ -297,7 +297,7 @@ data ServiceProviderNode : app v1 {
     created_at: u64,
 }
     store graph
-    govern lex esn/global/org/polylabs/oauth
+    govern lex esn/global/org/polyqlabs/oauth
     cortex {
         obfuscate [admin_contact]
         infer on_read
@@ -344,7 +344,7 @@ The `ai_feed auth_anomaly` drives ESLM-powered detection of unusual login patter
 
 Key circuits: `create_org`, `register_app`, `create_session`, `register_sp`, `authorize_app`, `establish_federation`, `evaluate_risk`, `snapshot_org_quantum_state`.
 
-### Token Chain DAG (`polyoauth_token_dag.fl`)
+### Token Chain DAG (`qoauth_token_dag.fl`)
 
 Tokens are modeled as a DAG with Stratum merkle-CSR storage, Cortex AI governance, and POVC witness attestation. Each token is an ML-DSA-87 signed assertion (not a shared secret). Refresh and revocation are explicit edges. Revocations are first-class DAG nodes with their own Cortex policy. The DAG enforces acyclicity — a revoked token cannot be un-revoked, and refresh chains are strictly forward.
 
@@ -365,7 +365,7 @@ data TokenNode : app v1 {
     nonce: string,
 }
     store dag
-    govern lex esn/global/org/polylabs/oauth
+    govern lex esn/global/org/polyqlabs/oauth
     cortex {
         redact [claims_encrypted, signature]
         obfuscate [subject_id, issuer_id]
@@ -382,7 +382,7 @@ data RevocationNode : app v1 {
     cascade_count: u16,
 }
     store dag
-    govern lex esn/global/org/polylabs/oauth
+    govern lex esn/global/org/polyqlabs/oauth
     cortex {
         obfuscate [revoker_id]
         infer on_write
@@ -430,7 +430,7 @@ series token_series: token_chain
 
 Key circuits: `issue_token`, `issue_authorization_code`, `refresh_token`, `revoke_token`, `verify_chain`, `introspect_token`, `exchange_authorization_code`, `snapshot_token_chain_state`.
 
-### Session Lifecycle State Machine (`polyoauth_session_lifecycle.fl`)
+### Session Lifecycle State Machine (`qoauth_session_lifecycle.fl`)
 
 Every authentication session follows a strict lifecycle with anomaly detection on state transitions.
 
@@ -460,7 +460,7 @@ State transitions update the `session_count`, `active_users`, and `risk_score` o
 
 ## Stratum & Cortex Integration
 
-Poly OAuth v3.0 fully composes eStream's Stratum storage engine and Cortex AI governance layer. Every `data` node type declares its storage binding (`store graph` or `store dag`), lex governance path (`govern lex`), and field-level Cortex visibility policy (`cortex {}`).
+Q OAuth v3.0 fully composes eStream's Stratum storage engine and Cortex AI governance layer. Every `data` node type declares its storage binding (`store graph` or `store dag`), lex governance path (`govern lex`), and field-level Cortex visibility policy (`cortex {}`).
 
 ### Stratum Storage Bindings
 
@@ -468,13 +468,13 @@ Poly OAuth v3.0 fully composes eStream's Stratum storage engine and Cortex AI go
 |-----------|-------------|-----------------|---------|
 | `graph identity_federation` | `storage csr { hot @bram, warm @ddr, cold @nvme }` | Compressed Sparse Row graph | Org/app/user/SP federation with tiered hot-warm-cold placement |
 | `dag token_chain` | `storage merkle_csr { hot @bram, warm @ddr, cold @nvme }` | Merkle-authenticated CSR DAG | Token lifecycle with cryptographic proof of every mutation |
-| Session cache | `kv` (via PolyKit) | ESLite key-value | Fast session lookup by `session_id` for auth middleware hot path |
+| Session cache | `kv` (via QKit) | ESLite key-value | Fast session lookup by `session_id` for auth middleware hot path |
 
 **Graph** (`identity_federation`): The CSR storage engine materializes the node/edge/overlay graph in compressed sparse row format. Hot data (active sessions, recent auth overlays) resides in `@bram` (block RAM), warm data (org configs, app registrations) migrates to `@ddr`, and cold data (historical sessions, expired federations) moves to `@nvme`. Overlay counters (`session_count`, `active_users`, `risk_score`) are `curate delta_curate` — atomically updated via delta operations and curated for ESLM consumption.
 
 **DAG** (`token_chain`): The merkle-CSR backend extends CSR with a per-mutation merkle root, enabling cryptographic proof of the entire token lifecycle. The `attest povc { witness threshold(2,3) }` block requires 2-of-3 lattice witnesses to attest each DAG mutation before it is considered final. This prevents a single compromised node from forging tokens or silently revoking them.
 
-**KV** (session cache): PolyKit's ESLite-backed KV store provides sub-millisecond `session_id → UserSessionNode` lookups for the auth middleware hot path. The KV cache is populated on `create_session` and invalidated on session expiry or revocation.
+**KV** (session cache): QKit's ESLite-backed KV store provides sub-millisecond `session_id → UserSessionNode` lookups for the auth middleware hot path. The KV cache is populated on `create_session` and invalidated on session expiry or revocation.
 
 ### Cortex Visibility Policies
 
@@ -528,7 +528,7 @@ create_session() → graph_insert(identity_federation, session)
 
 Both the identity graph and token DAG expose `snapshot_*` circuits that produce `.q` quantum state snapshots — point-in-time merkle-authenticated captures of the entire construct state. These are used for:
 
-1. **Org migration**: When an enterprise migrates between Poly OAuth regions or tiers, `snapshot_org_quantum_state` captures the full org subgraph (apps, SPs, overlays) as a signed `.q` blob. The target region imports the snapshot and verifies the merkle proof + ML-DSA-87 signature.
+1. **Org migration**: When an enterprise migrates between Q OAuth regions or tiers, `snapshot_org_quantum_state` captures the full org subgraph (apps, SPs, overlays) as a signed `.q` blob. The target region imports the snapshot and verifies the merkle proof + ML-DSA-87 signature.
 
 2. **Token chain audit**: `snapshot_token_chain_state` captures the DAG state (active/revoked token counts, merkle root, aggregate usage) for compliance audits. The POVC witness attestation on the DAG ensures the snapshot reflects the attested state, not a tampered view.
 
@@ -545,10 +545,10 @@ Both the identity graph and token DAG expose `snapshot_*` circuits that produce 
   "header": {
     "alg": "ML-DSA-87",
     "typ": "PQ-JWT",
-    "kid": "spark:did:polyoauth:signing-key-2026"
+    "kid": "spark:did:qoauth:signing-key-2026"
   },
   "payload": {
-    "iss": "https://auth.polylabs.dev",
+    "iss": "https://auth.polyqlabs.dev",
     "sub": "spark:did:alice",
     "aud": "client-app-id",
     "exp": 1740000000,
@@ -563,7 +563,7 @@ Both the identity graph and token DAG expose `snapshot_*` circuits that produce 
 }
 ```
 
-The token is a PQ-signed assertion — it proves the issuer attested the claims. It is not a shared secret. Apps verify tokens using Poly OAuth's published ML-DSA-87 public key (available at the JWKS endpoint with PQ algorithm negotiation).
+The token is a PQ-signed assertion — it proves the issuer attested the claims. It is not a shared secret. Apps verify tokens using Q OAuth's published ML-DSA-87 public key (available at the JWKS endpoint with PQ algorithm negotiation).
 
 ---
 
@@ -614,7 +614,7 @@ Risk score (0.0–1.0) attached to every authentication via the `risk_score` ove
 
 ## scatter-cas Integration
 
-Poly OAuth builds on eStream's `scatter-cas` runtime for session and token storage. Classification-driven k-of-n erasure coding distributes encrypted state across providers.
+Q OAuth builds on eStream's `scatter-cas` runtime for session and token storage. Classification-driven k-of-n erasure coding distributes encrypted state across providers.
 
 ### Storage Layers
 
@@ -634,7 +634,7 @@ scatter-cas ObjectStore
 
 ## FastLang Circuits
 
-All circuits are written in FastLang `.fl` using PolyKit profiles. The build pipeline is:
+All circuits are written in FastLang `.fl` using QKit profiles. The build pipeline is:
 
 ```bash
 estream-dev build-wasm-client --from-fl circuits/fl/ --sign key.pem --enforce-budget
@@ -644,18 +644,18 @@ estream-dev build-wasm-client --from-fl circuits/fl/ --sign key.pem --enforce-bu
 
 | Circuit | File | Purpose | Size Budget |
 |---------|------|---------|-------------|
-| `polyoauth_auth` | `polyoauth_auth.fl` | SPARK challenge-response, signature verification | ≤128 KB |
-| `polyoauth_token` | `polyoauth_token.fl` | PQ-JWT issuance, refresh, revocation | ≤128 KB |
-| `polyoauth_session` | `polyoauth_session.fl` | Session lifecycle management | ≤128 KB |
-| `polyoauth_risk` | `polyoauth_risk.fl` | Risk scoring, anomaly evaluation | ≤128 KB |
-| `polyoauth_admin` | `polyoauth_admin.fl` | Org/app management, policy CRUD | ≤128 KB |
+| `qoauth_auth` | `qoauth_auth.fl` | SPARK challenge-response, signature verification | ≤128 KB |
+| `qoauth_token` | `qoauth_token.fl` | PQ-JWT issuance, refresh, revocation | ≤128 KB |
+| `qoauth_session` | `qoauth_session.fl` | Session lifecycle management | ≤128 KB |
+| `qoauth_risk` | `qoauth_risk.fl` | Risk scoring, anomaly evaluation | ≤128 KB |
+| `qoauth_admin` | `qoauth_admin.fl` | Org/app management, policy CRUD | ≤128 KB |
 
-All circuits compose PolyKit:
+All circuits compose QKit:
 ```fastlang
-circuit polyoauth_auth(user_id: bytes(16), challenge: bytes(64), signature: bytes(4627)) -> bool
+circuit qoauth_auth(user_id: bytes(16), challenge: bytes(64), signature: bytes(4627)) -> bool
     profile poly_framework_sensitive
-    composes: [polykit_identity, polykit_metering, polykit_rbac]
-    lex esn/global/org/polylabs/oauth/auth
+    composes: [qkit_identity, qkit_metering, qkit_rbac]
+    lex esn/global/org/polyqlabs/oauth/auth
     constant_time true
     observe metrics: [auth_ops, session_count, latency_ns]
 {
@@ -667,10 +667,10 @@ circuit polyoauth_auth(user_id: bytes(16), challenge: bytes(64), signature: byte
 
 | Circuit | File | Purpose |
 |---------|------|---------|
-| `polyoauth_session_sync` | `polyoauth_session_sync.fl` | Session scatter policy enforcement, cross-device sync |
-| `polyoauth_federation_relay` | `polyoauth_federation_relay.fl` | Cross-org federation, SAML assertion relay |
-| `polyoauth_metering` | `polyoauth_metering.fl` | Per-product 8D metering (isolated) |
-| `polyoauth_scim` | `polyoauth_scim.fl` | SCIM provisioning lifecycle |
+| `qoauth_session_sync` | `qoauth_session_sync.fl` | Session scatter policy enforcement, cross-device sync |
+| `qoauth_federation_relay` | `qoauth_federation_relay.fl` | Cross-org federation, SAML assertion relay |
+| `qoauth_metering` | `qoauth_metering.fl` | Per-product 8D metering (isolated) |
+| `qoauth_scim` | `qoauth_scim.fl` | SCIM provisioning lifecycle |
 
 ---
 
@@ -679,7 +679,7 @@ circuit polyoauth_auth(user_id: bytes(16), challenge: bytes(64), signature: byte
 For legacy enterprise applications that require SAML:
 
 ```
-SP (legacy app) → SAML AuthnRequest → Poly OAuth SAML endpoint
+SP (legacy app) → SAML AuthnRequest → Q OAuth SAML endpoint
                                             │
                                             ▼
                                       SPARK biometric auth
@@ -691,7 +691,7 @@ SP (legacy app) → SAML AuthnRequest → Poly OAuth SAML endpoint
                                       SP validates assertion (PQ-safe)
 ```
 
-The SAML bridge translates between SAML 2.0 XML assertions and Poly OAuth's internal graph model. Assertions are signed with ML-DSA-87 instead of RSA/ECDSA.
+The SAML bridge translates between SAML 2.0 XML assertions and Q OAuth's internal graph model. Assertions are signed with ML-DSA-87 instead of RSA/ECDSA.
 
 ---
 
@@ -700,7 +700,7 @@ The SAML bridge translates between SAML 2.0 XML assertions and Poly OAuth's inte
 SCIM 2.0 endpoints provide automated user lifecycle management:
 
 ```
-HR System / IdP → SCIM API → Poly OAuth
+HR System / IdP → SCIM API → Q OAuth
                                   │
                                   ├── Create user → BelongsToEdge in identity_federation
                                   ├── Update user → Overlay updates
@@ -708,23 +708,23 @@ HR System / IdP → SCIM API → Poly OAuth
                                   └── Delete → Purge from identity_federation graph
 ```
 
-SCIM operations are exposed as standard HTTP endpoints (required by specification) while internally executing as graph mutations via the `polyoauth_scim.fl` circuit.
+SCIM operations are exposed as standard HTTP endpoints (required by specification) while internally executing as graph mutations via the `qoauth_scim.fl` circuit.
 
 ---
 
 ## StreamSight Observability
 
-Per-product isolated telemetry within the `polylabs.oauth.*` lex namespace.
+Per-product isolated telemetry within the `polyqlabs.oauth.*` lex namespace.
 
 ### Telemetry Stream Paths
 
 ```
-lex://estream/apps/polylabs.oauth/telemetry
-lex://estream/apps/polylabs.oauth/telemetry/sli
-lex://estream/apps/polylabs.oauth/metrics/baseline
-lex://estream/apps/polylabs.oauth/metrics/deviations
-lex://estream/apps/polylabs.oauth/incidents
-lex://estream/apps/polylabs.oauth/eslm/auth_anomaly
+lex://estream/apps/polyqlabs.oauth/telemetry
+lex://estream/apps/polyqlabs.oauth/telemetry/sli
+lex://estream/apps/polyqlabs.oauth/metrics/baseline
+lex://estream/apps/polyqlabs.oauth/metrics/deviations
+lex://estream/apps/polyqlabs.oauth/incidents
+lex://estream/apps/polyqlabs.oauth/eslm/auth_anomaly
 ```
 
 No telemetry path references any other Poly product. StreamSight baseline gate learns per-operation latency distributions and flags deviations.
@@ -735,14 +735,14 @@ No telemetry path references any other Poly product. StreamSight baseline gate l
 
 | Widget ID | Category | Description |
 |-----------|----------|-------------|
-| `polyoauth-auth-activity` | observability | Authentication rate, success/failure breakdown |
-| `polyoauth-session-gauge` | observability | Active sessions, session lifecycle distribution |
-| `polyoauth-risk-heatmap` | observability | Risk score distribution across orgs/apps |
-| `polyoauth-deviation-feed` | observability | StreamSight baseline deviation feed |
-| `polyoauth-anomaly-feed` | observability | ESLM auth_anomaly real-time detections |
-| `polyoauth-token-lifecycle` | governance | Token issuance/refresh/revocation rates |
-| `polyoauth-org-overview` | governance | Org membership, app count, policy compliance |
-| `polyoauth-scim-activity` | governance | SCIM provisioning events and sync status |
+| `qoauth-auth-activity` | observability | Authentication rate, success/failure breakdown |
+| `qoauth-session-gauge` | observability | Active sessions, session lifecycle distribution |
+| `qoauth-risk-heatmap` | observability | Risk score distribution across orgs/apps |
+| `qoauth-deviation-feed` | observability | StreamSight baseline deviation feed |
+| `qoauth-anomaly-feed` | observability | ESLM auth_anomaly real-time detections |
+| `qoauth-token-lifecycle` | governance | Token issuance/refresh/revocation rates |
+| `qoauth-org-overview` | governance | Org membership, app count, policy compliance |
+| `qoauth-scim-activity` | governance | SCIM provisioning events and sync status |
 
 ---
 
@@ -759,18 +759,18 @@ No telemetry path references any other Poly product. StreamSight baseline gate l
 | Ping Identity | SAML federation → migration |
 | OneLogin | SCIM sync → migration |
 
-During migration, Poly OAuth can federate with existing IdPs:
+During migration, Q OAuth can federate with existing IdPs:
 ```
-User → Poly OAuth → (if not yet migrated) → Existing IdP
+User → Q OAuth → (if not yet migrated) → Existing IdP
                    → (if migrated) → SPARK biometric
 ```
 
 ### Lex Bridge (Opt-In)
 
-Enterprise admins can opt-in to cross-product visibility via an explicit lex bridge between `esn/global/org/polylabs/oauth` and the enterprise admin namespace. The bridge is gated by **k-of-n admin witness attestation** and is revocable.
+Enterprise admins can opt-in to cross-product visibility via an explicit lex bridge between `esn/global/org/polyqlabs/oauth` and the enterprise admin namespace. The bridge is gated by **k-of-n admin witness attestation** and is revocable.
 
 ```
-Enterprise admin namespace ←──lex bridge──→ polylabs.oauth.{org_id}.*
+Enterprise admin namespace ←──lex bridge──→ polyqlabs.oauth.{org_id}.*
                               │
                               └── gated by k-of-n witness attestation
                               └── org-level aggregates only (no individual session data)
@@ -783,14 +783,14 @@ Even with the bridge, individual user session data and authentication events are
 
 ## Why It's the Stickiest Product
 
-Once an enterprise integrates Poly OAuth for SSO:
+Once an enterprise integrates Q OAuth for SSO:
 
 1. Every employee's biometric is enrolled
-2. Every app is configured to use Poly OAuth (OAuth/OIDC/SAML)
+2. Every app is configured to use Q OAuth (OAuth/OIDC/SAML)
 3. Conditional access policies are tuned per app tag
 4. ESLM has learned normal authentication patterns (baseline window)
 5. SCIM provisioning is wired to HR systems
-6. Audit logs are in Poly OAuth format (merkle-chained, witness-attested)
+6. Audit logs are in Q OAuth format (merkle-chained, witness-attested)
 
 Switching to a different IdP requires:
 - Re-enrolling every employee with a new auth method
@@ -812,28 +812,28 @@ The switching cost increases with every employee, app, policy, and day of ESLM l
 | Business | Up to 1000 | + SAML 2.0, SCIM, conditional access, FIDO2 bridge | $5/user/mo |
 | Enterprise | Unlimited | + ESLM anomaly, multi-org, PQ CA, custom policies, SLA | Contract |
 
-Tier enforcement via PolyKit `metering_graph` + `subscription_lifecycle` state machine. Billing uses blinded payment tokens — backend cannot correlate which SPARK identity subscribes to which tier.
+Tier enforcement via QKit `metering_graph` + `subscription_lifecycle` state machine. Billing uses blinded payment tokens — backend cannot correlate which SPARK identity subscribes to which tier.
 
 ---
 
 ## Directory Structure
 
 ```
-polyoauth/
+qoauth/
 ├── circuits/fl/
-│   ├── polyoauth_auth.fl
-│   ├── polyoauth_token.fl
-│   ├── polyoauth_session.fl
-│   ├── polyoauth_risk.fl
-│   ├── polyoauth_admin.fl
-│   ├── polyoauth_saml.fl
-│   ├── polyoauth_scim.fl
-│   ├── polyoauth_session_sync.fl
-│   ├── polyoauth_federation_relay.fl
-│   ├── polyoauth_metering.fl
+│   ├── qoauth_auth.fl
+│   ├── qoauth_token.fl
+│   ├── qoauth_session.fl
+│   ├── qoauth_risk.fl
+│   ├── qoauth_admin.fl
+│   ├── qoauth_saml.fl
+│   ├── qoauth_scim.fl
+│   ├── qoauth_session_sync.fl
+│   ├── qoauth_federation_relay.fl
+│   ├── qoauth_metering.fl
 │   └── graphs/
-│       ├── polyoauth_identity_graph.fl
-│       └── polyoauth_token_dag.fl
+│       ├── qoauth_identity_graph.fl
+│       └── qoauth_token_dag.fl
 ├── crates/
 │   ├── poly-oauth-server/
 │   ├── saml-bridge/
@@ -860,7 +860,7 @@ polyoauth/
 - `token_chain` DAG with ML-DSA-87 signing
 - `session_lifecycle` state machine
 - OAuth 2.0 / OIDC provider (Authorization Code + PKCE, Client Credentials)
-- SPARK biometric authentication (`poly-oauth-v1`)
+- SPARK biometric authentication (`q-oauth-v1`)
 - PQ-JWT token issuance and verification
 - Basic admin console
 - StreamSight L0 metrics
@@ -884,7 +884,7 @@ polyoauth/
 ### Phase 4: Advanced (2027+)
 - PQ certificate authority (ML-DSA-87 CA for enterprise PKI)
 - Lex bridge for enterprise cross-product visibility (opt-in, k-of-n gated)
-- Poly Vault HSM integration (signing keys in hardware)
+- Q Vault HSM integration (signing keys in hardware)
 - Custom auth flows (FLIR programmable)
 - Enterprise tier + SLA
 - ESN-AI optimization recommendations
@@ -893,5 +893,5 @@ polyoauth/
 
 ## Related Documents
 
-- [polylabs/business/PRODUCT_FAMILY.md] — Product specifications
-- [polylabs/business/STRATEGY.md] — Overall strategy
+- [polyqlabs/business/PRODUCT_FAMILY.md] — Product specifications
+- [polyqlabs/business/STRATEGY.md] — Overall strategy

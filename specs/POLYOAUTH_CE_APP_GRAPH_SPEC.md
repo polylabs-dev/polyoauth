@@ -4,12 +4,12 @@
 |-------|-------|
 | **Version** | v0.1.0 |
 | **Status** | Draft |
-| **Product** | Poly OAuth |
-| **Lex Namespace** | `polylabs/polyoauth` |
-| **App Graph** | `circuits/fl/polyoauth_app_graph.fl` |
-| **CE Meaning** | `circuits/fl/polyoauth_meaning.fl` |
-| **Upstream Dependency** | PolyKit v0.12.0+, eStream v0.22.0+ (CE Phase 1+) |
-| **New Circuits** | 2 (`polyoauth_app_graph.fl`, `polyoauth_meaning.fl`) |
+| **Product** | Q OAuth |
+| **Lex Namespace** | `polyqlabs/qoauth` |
+| **App Graph** | `circuits/fl/qoauth_app_graph.fl` |
+| **CE Meaning** | `circuits/fl/qoauth_meaning.fl` |
+| **Upstream Dependency** | QKit v0.12.0+, eStream v0.22.0+ (CE Phase 1+) |
+| **New Circuits** | 2 (`qoauth_app_graph.fl`, `qoauth_meaning.fl`) |
 | **Total Circuits** | 14 (12 existing + 2 new) |
 
 ---
@@ -18,7 +18,7 @@
 
 ### Purpose
 
-This specification defines how Poly OAuth integrates with the eStream Cognitive Engine and registers its circuit topology as an App Graph. PolyOAuth composes 12 FL circuits (10 modules + 2 graphs) into a Stratum module graph with CE meaning domains tuned for PQ biometric SSO with ML-DSA-87 signed token workloads.
+This specification defines how Q OAuth integrates with the eStream Cognitive Engine and registers its circuit topology as an App Graph. PolyOAuth composes 12 FL circuits (10 modules + 2 graphs) into a Stratum module graph with CE meaning domains tuned for PQ biometric SSO with ML-DSA-87 signed token workloads.
 
 ### Design Principles
 
@@ -26,8 +26,8 @@ This specification defines how Poly OAuth integrates with the eStream Cognitive 
 |-----------|----------------|
 | **100% FastLang** | Both new circuits are `.fl` source, compiled via FLIR codegen |
 | **Zero-Linkage Compliant** | CE state isolated via HKDF context `poly-oauth-ce-v1` |
-| **Composable** | Composes PolyKit CE adapter circuits via `EDGE_BRIDGE_TO` |
-| **Lex-Isolated** | All CE observations stay within `polylabs/polyoauth/*` lex namespaces |
+| **Composable** | Composes QKit CE adapter circuits via `EDGE_BRIDGE_TO` |
+| **Lex-Isolated** | All CE observations stay within `polyqlabs/qoauth/*` lex namespaces |
 
 ---
 
@@ -37,32 +37,32 @@ This specification defines how Poly OAuth integrates with the eStream Cognitive 
 
 | Module | Circuit File | Partition | SLA |
 |--------|-------------|-----------|-----|
-| `polyoauth_auth` | `polyoauth_auth.fl` | Backend | Premium |
-| `polyoauth_token` | `polyoauth_token.fl` | Backend | Premium |
-| `polyoauth_session` | `polyoauth_session.fl` | Backend | Premium |
-| `polyoauth_oidc` | `polyoauth_oidc.fl` | Backend | Premium |
-| `polyoauth_webauthn` | `polyoauth_webauthn.fl` | Backend | Premium |
-| `polyoauth_risk` | `polyoauth_risk.fl` | Backend | Standard |
-| `polyoauth_admin` | `polyoauth_admin.fl` | Backend | Standard |
-| `polyoauth_metering` | `polyoauth_metering.fl` | Shared | Standard |
-| `polyoauth_platform_health` | `polyoauth_platform_health.fl` | Shared | Standard |
-| `polyoauth_rbac` | `polyoauth_rbac.fl` | Shared | Standard |
-| `polyoauth_identity_graph` | `graphs/polyoauth_identity_graph.fl` | Backend | Premium |
-| `polyoauth_token_dag` | `graphs/polyoauth_token_dag.fl` | Backend | Standard |
+| `qoauth_auth` | `qoauth_auth.fl` | Backend | Premium |
+| `qoauth_token` | `qoauth_token.fl` | Backend | Premium |
+| `qoauth_session` | `qoauth_session.fl` | Backend | Premium |
+| `qoauth_oidc` | `qoauth_oidc.fl` | Backend | Premium |
+| `qoauth_webauthn` | `qoauth_webauthn.fl` | Backend | Premium |
+| `qoauth_risk` | `qoauth_risk.fl` | Backend | Standard |
+| `qoauth_admin` | `qoauth_admin.fl` | Backend | Standard |
+| `qoauth_metering` | `qoauth_metering.fl` | Shared | Standard |
+| `qoauth_platform_health` | `qoauth_platform_health.fl` | Shared | Standard |
+| `qoauth_rbac` | `qoauth_rbac.fl` | Shared | Standard |
+| `qoauth_identity_graph` | `graphs/qoauth_identity_graph.fl` | Backend | Premium |
+| `qoauth_token_dag` | `graphs/qoauth_token_dag.fl` | Backend | Standard |
 
 ### Intra-Graph Edges
 
-- `polyoauth_auth` → `polyoauth_session` (session creation on successful auth)
-- `polyoauth_auth` → `polyoauth_risk` (risk evaluation before granting access)
-- `polyoauth_auth` → `polyoauth_webauthn` (biometric credential verification)
-- `polyoauth_token` → `polyoauth_session` (token bound to session lifecycle)
-- `polyoauth_token` → `polyoauth_token_dag` (token lineage tracking)
-- `polyoauth_oidc` → `polyoauth_token` (ID token issuance after OIDC flow)
-- `polyoauth_oidc` → `polyoauth_identity_graph` (federated identity resolution)
-- `polyoauth_risk` → `polyoauth_rbac` (policy-gated risk score enforcement)
-- `polyoauth_admin` → `polyoauth_rbac` (admin operations require RBAC check)
-- `polyoauth_metering` → `polyoauth_token` (token issuance accounting)
-- `polyoauth_platform_health` → `polyoauth_session` (session health overlay reads)
+- `qoauth_auth` → `qoauth_session` (session creation on successful auth)
+- `qoauth_auth` → `qoauth_risk` (risk evaluation before granting access)
+- `qoauth_auth` → `qoauth_webauthn` (biometric credential verification)
+- `qoauth_token` → `qoauth_session` (token bound to session lifecycle)
+- `qoauth_token` → `qoauth_token_dag` (token lineage tracking)
+- `qoauth_oidc` → `qoauth_token` (ID token issuance after OIDC flow)
+- `qoauth_oidc` → `qoauth_identity_graph` (federated identity resolution)
+- `qoauth_risk` → `qoauth_rbac` (policy-gated risk score enforcement)
+- `qoauth_admin` → `qoauth_rbac` (admin operations require RBAC check)
+- `qoauth_metering` → `qoauth_token` (token issuance accounting)
+- `qoauth_platform_health` → `qoauth_session` (session health overlay reads)
 
 ---
 
@@ -134,7 +134,7 @@ Aggregate OIDC provider usage and token exchange metrics for federation health.
 
 | Field | Value |
 |-------|-------|
-| Panel ID | `polyoauth_identity_security_posture` |
+| Panel ID | `qoauth_identity_security_posture` |
 | Domain Scope | `identity/auth_patterns`, `identity/session_health` |
 | Min Panelists | 3 |
 | Specializations | `biometric_auth`, `risk_scoring`, `session_management`, `credential_lifecycle` |
@@ -147,7 +147,7 @@ Advisory triggers: auth failure rate > 5% in 5min window, risk score p99 > 850, 
 
 | Field | Value |
 |-------|-------|
-| Panel ID | `polyoauth_federation_health` |
+| Panel ID | `qoauth_federation_health` |
 | Domain Scope | `identity/federation_coverage` |
 | Min Panelists | 3 |
 | Specializations | `oidc_protocol`, `token_exchange`, `provider_integration`, `webauthn_ceremony` |
@@ -164,9 +164,9 @@ Advisory triggers: IdP failure rate > 2% per provider, token exchange rejection 
 
 | Bridge | Source Module | Target | Shared Fields |
 |--------|-------------|--------|---------------|
-| PolyPass credential sync | `polyoauth_auth` | `polypass/polypass_vault` | `credential_ref`, `rotation_policy`, `breach_status` |
-| PolyAuthenticator MFA | `polyoauth_webauthn` | `polyauthenticator/polyauth_ceremony` | `attestation_format`, `credential_id`, `challenge_response` |
-| SSO consumer (all products) | `polyoauth_oidc` | `polykit/polykit_sso_consumer` | `id_token`, `session_handle`, `scope_grants` |
+| PolyPass credential sync | `qoauth_auth` | `qpass/qpass_vault` | `credential_ref`, `rotation_policy`, `breach_status` |
+| PolyAuthenticator MFA | `qoauth_webauthn` | `qauthenticator/qauth_ceremony` | `attestation_format`, `credential_id`, `challenge_response` |
+| SSO consumer (all products) | `qoauth_oidc` | `qkit/qkit_sso_consumer` | `id_token`, `session_handle`, `scope_grants` |
 
 ---
 
@@ -185,19 +185,19 @@ Advisory triggers: IdP failure rate > 2% per provider, token exchange rejection 
 
 | Circuit | File | Description |
 |---------|------|-------------|
-| `polyoauth_app_graph` | `circuits/fl/polyoauth_app_graph.fl` | 12-module app graph, edges, bridges, golden tests |
-| `polyoauth_meaning` | `circuits/fl/polyoauth_meaning.fl` | 3 CE domains, noise filter, 2 SME panels, golden tests |
+| `qoauth_app_graph` | `circuits/fl/qoauth_app_graph.fl` | 12-module app graph, edges, bridges, golden tests |
+| `qoauth_meaning` | `circuits/fl/qoauth_meaning.fl` | 3 CE domains, noise filter, 2 SME panels, golden tests |
 
 ### Existing Circuits (12)
 
 | Group | Circuits | Count |
 |-------|----------|-------|
-| **auth** | `polyoauth_auth`, `polyoauth_webauthn` | 2 |
-| **token** | `polyoauth_token`, `polyoauth_oidc` | 2 |
-| **session** | `polyoauth_session`, `polyoauth_risk` | 2 |
-| **admin** | `polyoauth_admin` | 1 |
-| **ops** | `polyoauth_metering`, `polyoauth_platform_health`, `polyoauth_rbac` | 3 |
-| **graphs** | `polyoauth_identity_graph`, `polyoauth_token_dag` | 2 |
+| **auth** | `qoauth_auth`, `qoauth_webauthn` | 2 |
+| **token** | `qoauth_token`, `qoauth_oidc` | 2 |
+| **session** | `qoauth_session`, `qoauth_risk` | 2 |
+| **admin** | `qoauth_admin` | 1 |
+| **ops** | `qoauth_metering`, `qoauth_platform_health`, `qoauth_rbac` | 3 |
+| **graphs** | `qoauth_identity_graph`, `qoauth_token_dag` | 2 |
 
 ### Total: 14 Circuits
 
@@ -214,9 +214,9 @@ Advisory triggers: IdP failure rate > 2% per provider, token exchange rejection 
 | Dependency | Version | Usage |
 |------------|---------|-------|
 | eStream CE | v0.22.0+ Phase 1+ | SSM hidden state, observation ingestion, cortex advisors |
-| PolyKit CE | v0.12.0+ | `polykit_cognitive`, `polykit_noise_filter`, `polykit_sme`, `polykit_app_graph` |
-| `polykit_sso_consumer` | existing | Bridge target for cross-product SSO handoff |
-| `polykit_identity` | existing | SPARK identity for HKDF derivation |
-| `polykit_metering` | existing | Per-invocation metering with differential privacy |
-| `polypass_vault` | existing | Bridge target for credential sync |
-| `polyauth_ceremony` | existing | Bridge target for WebAuthn/FIDO2 MFA |
+| QKit CE | v0.12.0+ | `qkit_cognitive`, `qkit_noise_filter`, `qkit_sme`, `qkit_app_graph` |
+| `qkit_sso_consumer` | existing | Bridge target for cross-product SSO handoff |
+| `qkit_identity` | existing | SPARK identity for HKDF derivation |
+| `qkit_metering` | existing | Per-invocation metering with differential privacy |
+| `qpass_vault` | existing | Bridge target for credential sync |
+| `qauth_ceremony` | existing | Bridge target for WebAuthn/FIDO2 MFA |

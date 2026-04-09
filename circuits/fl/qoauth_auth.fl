@@ -1,7 +1,7 @@
-// Poly OAuth Authentication — SPARK challenge-response with ML-DSA-87 (v0.12.0)
+// Q OAuth Authentication — SPARK challenge-response with ML-DSA-87 (v0.12.0)
 //
 // Lex Architecture:
-//   esn/global/org/polylabs/oauth/auth
+//   esn/global/org/polyqlabs/oauth/auth
 //   SPARK biometric challenge -> visual key match -> ML-DSA-87 signed response.
 //   No passwords, no TOTP, no SMS. Device-bound, unphishable.
 //
@@ -11,8 +11,8 @@
 //   Password       — legacy migration only (disabled by default)
 //   Mfa            — step-up when risk threshold exceeded
 
-import polykit_identity
-import polykit_metering
+import qkit_identity
+import qkit_metering
 
 type AuthMethod = enum {
     SparkBiometric,
@@ -32,7 +32,7 @@ data AuthChallenge : oauth v1 {
     ttl_ms: u64,
 }
     store kv
-    govern lex global/org/polylabs/oauth/auth
+    govern lex global/org/polyqlabs/oauth/auth
     cortex {
         infer on_write
         on_anomaly alert "oauth-team"
@@ -58,7 +58,7 @@ data AuthResult : oauth v1 {
     timestamp_ns: u64,
 }
     store kv
-    govern lex global/org/polylabs/oauth/auth
+    govern lex global/org/polyqlabs/oauth/auth
     cortex {
         obfuscate [user_id]
         infer on_write
@@ -79,7 +79,7 @@ stream auth_events: event<AuthResult>
 // --- Create a SPARK authentication challenge ---
 circuit create_challenge(user_id: bytes(16), requested_method: AuthMethod, risk_hint: u16) -> AuthChallenge
     profile poly_framework_sensitive
-    lex global/org/polylabs/oauth/auth
+    lex global/org/polyqlabs/oauth/auth
     @precision C
     constant_time true
     @observe metrics: [challenges_created, challenge_latency_ns]
@@ -120,7 +120,7 @@ circuit create_challenge(user_id: bytes(16), requested_method: AuthMethod, risk_
 // --- Verify a SPARK challenge-response ---
 circuit verify_response(challenge: AuthChallenge, response: AuthResponse, user_pk: bytes(2592)) -> AuthResult
     profile poly_framework_sensitive
-    lex global/org/polylabs/oauth/auth
+    lex global/org/polyqlabs/oauth/auth
     @precision C
     constant_time true
     @observe metrics: [auth_attempts, auth_successes, auth_failures, verify_latency_ns]
@@ -138,7 +138,7 @@ circuit verify_response(challenge: AuthChallenge, response: AuthResponse, user_p
     let message = concat(challenge.nonce, challenge.challenge_id, response.timestamp_ns)
     let sig_valid = mldsa_verify(message, response.signature, user_pk)
 
-    let user_id_check = polykit_identity::derive_user_id(user_pk)
+    let user_id_check = qkit_identity::derive_user_id(user_pk)
     let id_match = constant_time_eq(user_id_check, response.user_id)
 
     let authenticated = sig_valid and id_match
@@ -163,7 +163,7 @@ circuit verify_response(challenge: AuthChallenge, response: AuthResponse, user_p
 // --- Evaluate authentication strength by method ---
 circuit evaluate_auth_strength(method: AuthMethod) -> AuthStrength
     profile poly_framework_standard
-    lex global/org/polylabs/oauth/auth
+    lex global/org/polyqlabs/oauth/auth
     @precision B
     @observe metrics: [strength_evaluations]
 {
@@ -202,7 +202,7 @@ circuit evaluate_auth_strength(method: AuthMethod) -> AuthStrength
 // --- Step-up authentication when risk exceeds threshold ---
 circuit step_up_auth(current_result: AuthResult, risk_threshold: u16, new_response: AuthResponse, user_pk: bytes(2592)) -> AuthResult
     profile poly_framework_sensitive
-    lex global/org/polylabs/oauth/auth
+    lex global/org/polyqlabs/oauth/auth
     @precision C
     constant_time true
     @observe metrics: [step_up_requests, step_up_successes, step_up_failures]

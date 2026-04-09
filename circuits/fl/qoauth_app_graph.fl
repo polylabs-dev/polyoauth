@@ -1,13 +1,13 @@
 /// Spec: specs/POLYOAUTH_CE_APP_GRAPH_SPEC.md
-/// App Graph for Poly OAuth — 12 ModuleNode definitions composing the
+/// App Graph for Q OAuth — 12 ModuleNode definitions composing the
 /// PQ biometric SSO product into Backend and Shared partitions. Registers
 /// intra-graph REQUIRES edges, cross-product bridge edges (PolyPass,
 /// PolyAuthenticator, SSO consumer), and CE meaning/noise/SME edges.
 ///
-/// Epic: polyoauth#TBD (CE + App Graph Integration)
-/// govern lex polylabs/polyoauth
+/// Epic: qoauth#TBD (CE + App Graph Integration)
+/// govern lex polyqlabs/qoauth
 
-lex polylabs/polyoauth
+lex polyqlabs/qoauth
 
 @target software
 @codegen_targets ["wasm", "rust"]
@@ -23,7 +23,7 @@ import "core/deployment/module_stratum.fl" {
     EDGE_REQUIRES, EDGE_BRIDGE_TO,
 }
 
-import "polykit/circuits/fl/polykit_app_graph.fl" {
+import "qkit/circuits/fl/qkit_app_graph.fl" {
     ProductGraphConfig, make_poly_module, add_poly_module,
     add_poly_edge, add_poly_bridge_edge, add_poly_ce_edges,
     find_poly_module_id,
@@ -37,19 +37,19 @@ import "polykit/circuits/fl/polykit_app_graph.fl" {
 const POLYOAUTH_VERSION_MAJOR: u32 = 0
 const POLYOAUTH_VERSION_MINOR: u32 = 12
 const POLYOAUTH_VERSION_PATCH: u32 = 0
-const POLYOAUTH_APP_LEX: string = "polylabs/polyoauth"
+const POLYOAUTH_APP_LEX: string = "polyqlabs/qoauth"
 const POLYOAUTH_VERSION_STR: string = "0.12.0"
 const POLYOAUTH_MODULE_COUNT: u64 = 12
 
 // ── Product Config ─────────────────────────────────────────────────────────────
 
-circuit polyoauth_product_config() -> ProductGraphConfig
-    lex polylabs/polyoauth
+circuit qoauth_product_config() -> ProductGraphConfig
+    lex polyqlabs/qoauth
     @status production
     @precision D
 {
     ProductGraphConfig {
-        product_name: "polyoauth",
+        product_name: "qoauth",
         product_lex: POLYOAUTH_APP_LEX,
         version_major: POLYOAUTH_VERSION_MAJOR,
         version_minor: POLYOAUTH_VERSION_MINOR,
@@ -62,19 +62,19 @@ circuit polyoauth_product_config() -> ProductGraphConfig
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
 
-circuit make_polyoauth_module(
+circuit make_qoauth_module(
     name: string,
     partition: u8,
     sla: u8,
     budget: ResourceBudget8D
 ) -> ModuleNode
-    lex polylabs/polyoauth
+    lex polyqlabs/qoauth
     @status production
     @precision C
     observe metrics: [module_name, aperture_partition]
     meters [compute_cycles]
 {
-    let cfg = polyoauth_product_config()
+    let cfg = qoauth_product_config()
     let ver = SemVer {
         major: POLYOAUTH_VERSION_MAJOR,
         minor: POLYOAUTH_VERSION_MINOR,
@@ -130,13 +130,13 @@ circuit make_polyoauth_module(
 // Module Definitions — 12 ModuleNodes
 // ═══════════════════════════════════════════════════════════════════════════════
 
-// ── polyoauth_auth ── SPARK biometric auth, ML-DSA-87 challenge-response ─────
+// ── qoauth_auth ── SPARK biometric auth, ML-DSA-87 challenge-response ─────
 
-circuit polyoauth_auth_module() -> ModuleNode
-    lex polylabs/polyoauth  @status production  @precision B
+circuit qoauth_auth_module() -> ModuleNode
+    lex polyqlabs/qoauth  @status production  @precision B
     observe metrics: [module_init]  meters [compute_cycles]
 {
-    make_polyoauth_module("polyoauth_auth", AperturePartition::Backend as u8,
+    make_qoauth_module("qoauth_auth", AperturePartition::Backend as u8,
         SLATier::Premium as u8, ResourceBudget8D {
             execution: 300000, hash_ops: 10000, bandwidth: 40000,
             storage: 50000, observe_events: 12000, proofs: 200,
@@ -144,13 +144,13 @@ circuit polyoauth_auth_module() -> ModuleNode
         })
 }
 
-// ── polyoauth_token ── ML-DSA-87 signed JWT issuance, refresh, revocation ────
+// ── qoauth_token ── ML-DSA-87 signed JWT issuance, refresh, revocation ────
 
-circuit polyoauth_token_module() -> ModuleNode
-    lex polylabs/polyoauth  @status production  @precision B
+circuit qoauth_token_module() -> ModuleNode
+    lex polyqlabs/qoauth  @status production  @precision B
     observe metrics: [module_init]  meters [compute_cycles]
 {
-    make_polyoauth_module("polyoauth_token", AperturePartition::Backend as u8,
+    make_qoauth_module("qoauth_token", AperturePartition::Backend as u8,
         SLATier::Premium as u8, ResourceBudget8D {
             execution: 250000, hash_ops: 8000, bandwidth: 30000,
             storage: 60000, observe_events: 10000, proofs: 150,
@@ -158,13 +158,13 @@ circuit polyoauth_token_module() -> ModuleNode
         })
 }
 
-// ── polyoauth_session ── Session lifecycle, concurrent session limits ─────────
+// ── qoauth_session ── Session lifecycle, concurrent session limits ─────────
 
-circuit polyoauth_session_module() -> ModuleNode
-    lex polylabs/polyoauth  @status production  @precision B
+circuit qoauth_session_module() -> ModuleNode
+    lex polyqlabs/qoauth  @status production  @precision B
     observe metrics: [module_init]  meters [compute_cycles]
 {
-    make_polyoauth_module("polyoauth_session", AperturePartition::Backend as u8,
+    make_qoauth_module("qoauth_session", AperturePartition::Backend as u8,
         SLATier::Premium as u8, ResourceBudget8D {
             execution: 200000, hash_ops: 5000, bandwidth: 25000,
             storage: 80000, observe_events: 10000, proofs: 100,
@@ -172,13 +172,13 @@ circuit polyoauth_session_module() -> ModuleNode
         })
 }
 
-// ── polyoauth_oidc ── OIDC provider, authorization code flow, discovery ──────
+// ── qoauth_oidc ── OIDC provider, authorization code flow, discovery ──────
 
-circuit polyoauth_oidc_module() -> ModuleNode
-    lex polylabs/polyoauth  @status production  @precision B
+circuit qoauth_oidc_module() -> ModuleNode
+    lex polyqlabs/qoauth  @status production  @precision B
     observe metrics: [module_init]  meters [compute_cycles]
 {
-    make_polyoauth_module("polyoauth_oidc", AperturePartition::Backend as u8,
+    make_qoauth_module("qoauth_oidc", AperturePartition::Backend as u8,
         SLATier::Premium as u8, ResourceBudget8D {
             execution: 250000, hash_ops: 6000, bandwidth: 50000,
             storage: 40000, observe_events: 8000, proofs: 100,
@@ -186,13 +186,13 @@ circuit polyoauth_oidc_module() -> ModuleNode
         })
 }
 
-// ── polyoauth_webauthn ── FIDO2/WebAuthn ceremony, passkey management ────────
+// ── qoauth_webauthn ── FIDO2/WebAuthn ceremony, passkey management ────────
 
-circuit polyoauth_webauthn_module() -> ModuleNode
-    lex polylabs/polyoauth  @status production  @precision B
+circuit qoauth_webauthn_module() -> ModuleNode
+    lex polyqlabs/qoauth  @status production  @precision B
     observe metrics: [module_init]  meters [compute_cycles]
 {
-    make_polyoauth_module("polyoauth_webauthn", AperturePartition::Backend as u8,
+    make_qoauth_module("qoauth_webauthn", AperturePartition::Backend as u8,
         SLATier::Premium as u8, ResourceBudget8D {
             execution: 200000, hash_ops: 8000, bandwidth: 20000,
             storage: 30000, observe_events: 6000, proofs: 150,
@@ -200,13 +200,13 @@ circuit polyoauth_webauthn_module() -> ModuleNode
         })
 }
 
-// ── polyoauth_risk ── Adaptive risk scoring, step-up auth triggers ───────────
+// ── qoauth_risk ── Adaptive risk scoring, step-up auth triggers ───────────
 
-circuit polyoauth_risk_module() -> ModuleNode
-    lex polylabs/polyoauth  @status production  @precision B
+circuit qoauth_risk_module() -> ModuleNode
+    lex polyqlabs/qoauth  @status production  @precision B
     observe metrics: [module_init]  meters [compute_cycles]
 {
-    make_polyoauth_module("polyoauth_risk", AperturePartition::Backend as u8,
+    make_qoauth_module("qoauth_risk", AperturePartition::Backend as u8,
         SLATier::Standard as u8, ResourceBudget8D {
             execution: 150000, hash_ops: 3000, bandwidth: 20000,
             storage: 40000, observe_events: 8000, proofs: 80,
@@ -214,13 +214,13 @@ circuit polyoauth_risk_module() -> ModuleNode
         })
 }
 
-// ── polyoauth_admin ── Tenant config, IdP registration, client management ────
+// ── qoauth_admin ── Tenant config, IdP registration, client management ────
 
-circuit polyoauth_admin_module() -> ModuleNode
-    lex polylabs/polyoauth  @status production  @precision B
+circuit qoauth_admin_module() -> ModuleNode
+    lex polyqlabs/qoauth  @status production  @precision B
     observe metrics: [module_init]  meters [compute_cycles]
 {
-    make_polyoauth_module("polyoauth_admin", AperturePartition::Backend as u8,
+    make_qoauth_module("qoauth_admin", AperturePartition::Backend as u8,
         SLATier::Standard as u8, ResourceBudget8D {
             execution: 100000, hash_ops: 2000, bandwidth: 15000,
             storage: 30000, observe_events: 4000, proofs: 40,
@@ -228,13 +228,13 @@ circuit polyoauth_admin_module() -> ModuleNode
         })
 }
 
-// ── polyoauth_metering ── Per-operation metering with tier enforcement ────────
+// ── qoauth_metering ── Per-operation metering with tier enforcement ────────
 
-circuit polyoauth_metering_module() -> ModuleNode
-    lex polylabs/polyoauth  @status production  @precision B
+circuit qoauth_metering_module() -> ModuleNode
+    lex polyqlabs/qoauth  @status production  @precision B
     observe metrics: [module_init]  meters [compute_cycles]
 {
-    make_polyoauth_module("polyoauth_metering", AperturePartition::Shared as u8,
+    make_qoauth_module("qoauth_metering", AperturePartition::Shared as u8,
         SLATier::Standard as u8, ResourceBudget8D {
             execution: 80000, hash_ops: 1000, bandwidth: 10000,
             storage: 30000, observe_events: 6000, proofs: 30,
@@ -242,13 +242,13 @@ circuit polyoauth_metering_module() -> ModuleNode
         })
 }
 
-// ── polyoauth_platform_health ── Health checks, anomaly detection ────────────
+// ── qoauth_platform_health ── Health checks, anomaly detection ────────────
 
-circuit polyoauth_platform_health_module() -> ModuleNode
-    lex polylabs/polyoauth  @status production  @precision B
+circuit qoauth_platform_health_module() -> ModuleNode
+    lex polyqlabs/qoauth  @status production  @precision B
     observe metrics: [module_init]  meters [compute_cycles]
 {
-    make_polyoauth_module("polyoauth_platform_health", AperturePartition::Shared as u8,
+    make_qoauth_module("qoauth_platform_health", AperturePartition::Shared as u8,
         SLATier::Standard as u8, ResourceBudget8D {
             execution: 60000, hash_ops: 500, bandwidth: 8000,
             storage: 15000, observe_events: 8000, proofs: 20,
@@ -256,13 +256,13 @@ circuit polyoauth_platform_health_module() -> ModuleNode
         })
 }
 
-// ── polyoauth_rbac ── Role-based access control for tenants and clients ──────
+// ── qoauth_rbac ── Role-based access control for tenants and clients ──────
 
-circuit polyoauth_rbac_module() -> ModuleNode
-    lex polylabs/polyoauth  @status production  @precision B
+circuit qoauth_rbac_module() -> ModuleNode
+    lex polyqlabs/qoauth  @status production  @precision B
     observe metrics: [module_init]  meters [compute_cycles]
 {
-    make_polyoauth_module("polyoauth_rbac", AperturePartition::Shared as u8,
+    make_qoauth_module("qoauth_rbac", AperturePartition::Shared as u8,
         SLATier::Standard as u8, ResourceBudget8D {
             execution: 80000, hash_ops: 1000, bandwidth: 10000,
             storage: 20000, observe_events: 3000, proofs: 40,
@@ -270,13 +270,13 @@ circuit polyoauth_rbac_module() -> ModuleNode
         })
 }
 
-// ── polyoauth_identity_graph ── SPARK identity network, federation links ─────
+// ── qoauth_identity_graph ── SPARK identity network, federation links ─────
 
-circuit polyoauth_identity_graph_module() -> ModuleNode
-    lex polylabs/polyoauth  @status production  @precision B
+circuit qoauth_identity_graph_module() -> ModuleNode
+    lex polyqlabs/qoauth  @status production  @precision B
     observe metrics: [module_init]  meters [compute_cycles]
 {
-    make_polyoauth_module("polyoauth_identity_graph", AperturePartition::Backend as u8,
+    make_qoauth_module("qoauth_identity_graph", AperturePartition::Backend as u8,
         SLATier::Premium as u8, ResourceBudget8D {
             execution: 180000, hash_ops: 5000, bandwidth: 30000,
             storage: 100000, observe_events: 8000, proofs: 80,
@@ -284,13 +284,13 @@ circuit polyoauth_identity_graph_module() -> ModuleNode
         })
 }
 
-// ── polyoauth_token_dag ── Token lineage DAG (issue → refresh → revoke) ─────
+// ── qoauth_token_dag ── Token lineage DAG (issue → refresh → revoke) ─────
 
-circuit polyoauth_token_dag_module() -> ModuleNode
-    lex polylabs/polyoauth  @status production  @precision B
+circuit qoauth_token_dag_module() -> ModuleNode
+    lex polyqlabs/qoauth  @status production  @precision B
     observe metrics: [module_init]  meters [compute_cycles]
 {
-    make_polyoauth_module("polyoauth_token_dag", AperturePartition::Backend as u8,
+    make_qoauth_module("qoauth_token_dag", AperturePartition::Backend as u8,
         SLATier::Standard as u8, ResourceBudget8D {
             execution: 120000, hash_ops: 3000, bandwidth: 20000,
             storage: 80000, observe_events: 6000, proofs: 60,
@@ -304,10 +304,10 @@ circuit polyoauth_token_dag_module() -> ModuleNode
 
 /// Register all 12 PolyOAuth modules and their intra-graph REQUIRES
 /// dependency edges into the provided CsrStorage graph.
-circuit polyoauth_app_graph_register(
+circuit qoauth_app_graph_register(
     graph: CsrStorage
 ) -> CsrStorage
-    lex polylabs/polyoauth
+    lex polyqlabs/qoauth
     @status production
     @precision B
     @attested true
@@ -316,96 +316,96 @@ circuit polyoauth_app_graph_register(
     meters [compute_cycles, memory_bytes]
 {
     // ── Add all 12 modules ──────────────────────────────────────────────────
-    let (g, id_auth)            = module_graph_add_module(graph, polyoauth_auth_module())
-    let (g, id_token)           = module_graph_add_module(g, polyoauth_token_module())
-    let (g, id_session)         = module_graph_add_module(g, polyoauth_session_module())
-    let (g, id_oidc)            = module_graph_add_module(g, polyoauth_oidc_module())
-    let (g, id_webauthn)        = module_graph_add_module(g, polyoauth_webauthn_module())
-    let (g, id_risk)            = module_graph_add_module(g, polyoauth_risk_module())
-    let (g, id_admin)           = module_graph_add_module(g, polyoauth_admin_module())
-    let (g, id_metering)        = module_graph_add_module(g, polyoauth_metering_module())
-    let (g, id_platform_health) = module_graph_add_module(g, polyoauth_platform_health_module())
-    let (g, id_rbac)            = module_graph_add_module(g, polyoauth_rbac_module())
-    let (g, id_identity_graph)  = module_graph_add_module(g, polyoauth_identity_graph_module())
-    let (g, id_token_dag)       = module_graph_add_module(g, polyoauth_token_dag_module())
+    let (g, id_auth)            = module_graph_add_module(graph, qoauth_auth_module())
+    let (g, id_token)           = module_graph_add_module(g, qoauth_token_module())
+    let (g, id_session)         = module_graph_add_module(g, qoauth_session_module())
+    let (g, id_oidc)            = module_graph_add_module(g, qoauth_oidc_module())
+    let (g, id_webauthn)        = module_graph_add_module(g, qoauth_webauthn_module())
+    let (g, id_risk)            = module_graph_add_module(g, qoauth_risk_module())
+    let (g, id_admin)           = module_graph_add_module(g, qoauth_admin_module())
+    let (g, id_metering)        = module_graph_add_module(g, qoauth_metering_module())
+    let (g, id_platform_health) = module_graph_add_module(g, qoauth_platform_health_module())
+    let (g, id_rbac)            = module_graph_add_module(g, qoauth_rbac_module())
+    let (g, id_identity_graph)  = module_graph_add_module(g, qoauth_identity_graph_module())
+    let (g, id_token_dag)       = module_graph_add_module(g, qoauth_token_dag_module())
 
     let vc = ">=" ++ POLYOAUTH_VERSION_STR
 
     // ── Intra-graph REQUIRES edges ──────────────────────────────────────────
     // auth -> session (session creation on successful auth)
     let g = module_graph_add_edge(g, ModuleEdge {
-        edge_type: EDGE_REQUIRES, source_module: "polyoauth_auth",
-        source_version: POLYOAUTH_VERSION_STR, target_module: "polyoauth_session",
+        edge_type: EDGE_REQUIRES, source_module: "qoauth_auth",
+        source_version: POLYOAUTH_VERSION_STR, target_module: "qoauth_session",
         target_version_constraint: vc, metadata: bytes(0),
     }, id_auth, id_session)
 
     // auth -> risk (risk evaluation before granting access)
     let g = module_graph_add_edge(g, ModuleEdge {
-        edge_type: EDGE_REQUIRES, source_module: "polyoauth_auth",
-        source_version: POLYOAUTH_VERSION_STR, target_module: "polyoauth_risk",
+        edge_type: EDGE_REQUIRES, source_module: "qoauth_auth",
+        source_version: POLYOAUTH_VERSION_STR, target_module: "qoauth_risk",
         target_version_constraint: vc, metadata: bytes(0),
     }, id_auth, id_risk)
 
     // auth -> webauthn (biometric credential verification)
     let g = module_graph_add_edge(g, ModuleEdge {
-        edge_type: EDGE_REQUIRES, source_module: "polyoauth_auth",
-        source_version: POLYOAUTH_VERSION_STR, target_module: "polyoauth_webauthn",
+        edge_type: EDGE_REQUIRES, source_module: "qoauth_auth",
+        source_version: POLYOAUTH_VERSION_STR, target_module: "qoauth_webauthn",
         target_version_constraint: vc, metadata: bytes(0),
     }, id_auth, id_webauthn)
 
     // token -> session (token bound to session lifecycle)
     let g = module_graph_add_edge(g, ModuleEdge {
-        edge_type: EDGE_REQUIRES, source_module: "polyoauth_token",
-        source_version: POLYOAUTH_VERSION_STR, target_module: "polyoauth_session",
+        edge_type: EDGE_REQUIRES, source_module: "qoauth_token",
+        source_version: POLYOAUTH_VERSION_STR, target_module: "qoauth_session",
         target_version_constraint: vc, metadata: bytes(0),
     }, id_token, id_session)
 
     // token -> token_dag (token lineage tracking)
     let g = module_graph_add_edge(g, ModuleEdge {
-        edge_type: EDGE_REQUIRES, source_module: "polyoauth_token",
-        source_version: POLYOAUTH_VERSION_STR, target_module: "polyoauth_token_dag",
+        edge_type: EDGE_REQUIRES, source_module: "qoauth_token",
+        source_version: POLYOAUTH_VERSION_STR, target_module: "qoauth_token_dag",
         target_version_constraint: vc, metadata: bytes(0),
     }, id_token, id_token_dag)
 
     // oidc -> token (ID token issuance after OIDC flow)
     let g = module_graph_add_edge(g, ModuleEdge {
-        edge_type: EDGE_REQUIRES, source_module: "polyoauth_oidc",
-        source_version: POLYOAUTH_VERSION_STR, target_module: "polyoauth_token",
+        edge_type: EDGE_REQUIRES, source_module: "qoauth_oidc",
+        source_version: POLYOAUTH_VERSION_STR, target_module: "qoauth_token",
         target_version_constraint: vc, metadata: bytes(0),
     }, id_oidc, id_token)
 
     // oidc -> identity_graph (federated identity resolution)
     let g = module_graph_add_edge(g, ModuleEdge {
-        edge_type: EDGE_REQUIRES, source_module: "polyoauth_oidc",
-        source_version: POLYOAUTH_VERSION_STR, target_module: "polyoauth_identity_graph",
+        edge_type: EDGE_REQUIRES, source_module: "qoauth_oidc",
+        source_version: POLYOAUTH_VERSION_STR, target_module: "qoauth_identity_graph",
         target_version_constraint: vc, metadata: bytes(0),
     }, id_oidc, id_identity_graph)
 
     // risk -> rbac (policy-gated risk score enforcement)
     let g = module_graph_add_edge(g, ModuleEdge {
-        edge_type: EDGE_REQUIRES, source_module: "polyoauth_risk",
-        source_version: POLYOAUTH_VERSION_STR, target_module: "polyoauth_rbac",
+        edge_type: EDGE_REQUIRES, source_module: "qoauth_risk",
+        source_version: POLYOAUTH_VERSION_STR, target_module: "qoauth_rbac",
         target_version_constraint: vc, metadata: bytes(0),
     }, id_risk, id_rbac)
 
     // admin -> rbac (admin operations require RBAC check)
     let g = module_graph_add_edge(g, ModuleEdge {
-        edge_type: EDGE_REQUIRES, source_module: "polyoauth_admin",
-        source_version: POLYOAUTH_VERSION_STR, target_module: "polyoauth_rbac",
+        edge_type: EDGE_REQUIRES, source_module: "qoauth_admin",
+        source_version: POLYOAUTH_VERSION_STR, target_module: "qoauth_rbac",
         target_version_constraint: vc, metadata: bytes(0),
     }, id_admin, id_rbac)
 
     // metering -> token (token issuance accounting)
     let g = module_graph_add_edge(g, ModuleEdge {
-        edge_type: EDGE_REQUIRES, source_module: "polyoauth_metering",
-        source_version: POLYOAUTH_VERSION_STR, target_module: "polyoauth_token",
+        edge_type: EDGE_REQUIRES, source_module: "qoauth_metering",
+        source_version: POLYOAUTH_VERSION_STR, target_module: "qoauth_token",
         target_version_constraint: vc, metadata: bytes(0),
     }, id_metering, id_token)
 
     // platform_health -> session (session health overlay reads)
     let g = module_graph_add_edge(g, ModuleEdge {
-        edge_type: EDGE_REQUIRES, source_module: "polyoauth_platform_health",
-        source_version: POLYOAUTH_VERSION_STR, target_module: "polyoauth_session",
+        edge_type: EDGE_REQUIRES, source_module: "qoauth_platform_health",
+        source_version: POLYOAUTH_VERSION_STR, target_module: "qoauth_session",
         target_version_constraint: vc, metadata: bytes(0),
     }, id_platform_health, id_session)
 
@@ -418,31 +418,31 @@ circuit polyoauth_app_graph_register(
 
 /// Register EDGE_BRIDGE_TO edges linking PolyOAuth's auth module to PolyPass
 /// credential vault, webauthn module to PolyAuthenticator ceremony, and OIDC
-/// module to the PolyKit SSO consumer for cross-product single sign-on.
-circuit polyoauth_register_bridge_edges(
+/// module to the QKit SSO consumer for cross-product single sign-on.
+circuit qoauth_register_bridge_edges(
     graph: CsrStorage
 ) -> CsrStorage
-    lex polylabs/polyoauth
+    lex polyqlabs/qoauth
     @status production
     @precision B
     @attested true
     observe metrics: [bridge_count]
     meters [compute_cycles]
 {
-    let auth_id = find_poly_module_id(graph, "polyoauth_auth")
-    let webauthn_id = find_poly_module_id(graph, "polyoauth_webauthn")
-    let oidc_id = find_poly_module_id(graph, "polyoauth_oidc")
+    let auth_id = find_poly_module_id(graph, "qoauth_auth")
+    let webauthn_id = find_poly_module_id(graph, "qoauth_webauthn")
+    let oidc_id = find_poly_module_id(graph, "qoauth_oidc")
 
     let g = graph
 
-    // polyoauth_auth -> PolyPass credential vault bridge
+    // qoauth_auth -> PolyPass credential vault bridge
     if auth_id != 0xFFFFFFFF as u32 {
         let pass_bridge = InterAppEdge {
             edge_type: EDGE_BRIDGE_TO,
             source_lex: POLYOAUTH_APP_LEX,
-            source_module: "polyoauth_auth",
-            target_lex: "polylabs/polypass",
-            target_module: "polypass_vault",
+            source_module: "qoauth_auth",
+            target_lex: "polyqlabs/qpass",
+            target_module: "qpass_vault",
             bridge_scope: BridgeScope::Platform as u8,
             shared_fields: ["credential_ref", "rotation_policy", "breach_status"],
             redacted_fields: [],
@@ -451,14 +451,14 @@ circuit polyoauth_register_bridge_edges(
         g = module_graph_add_bridge_edge(g, pass_bridge, auth_id)
     }
 
-    // polyoauth_webauthn -> PolyAuthenticator ceremony bridge
+    // qoauth_webauthn -> PolyAuthenticator ceremony bridge
     if webauthn_id != 0xFFFFFFFF as u32 {
         let authn_bridge = InterAppEdge {
             edge_type: EDGE_BRIDGE_TO,
             source_lex: POLYOAUTH_APP_LEX,
-            source_module: "polyoauth_webauthn",
-            target_lex: "polylabs/polyauthenticator",
-            target_module: "polyauth_ceremony",
+            source_module: "qoauth_webauthn",
+            target_lex: "polyqlabs/qauthenticator",
+            target_module: "qauth_ceremony",
             bridge_scope: BridgeScope::Platform as u8,
             shared_fields: ["attestation_format", "credential_id", "challenge_response"],
             redacted_fields: [],
@@ -467,14 +467,14 @@ circuit polyoauth_register_bridge_edges(
         g = module_graph_add_bridge_edge(g, authn_bridge, webauthn_id)
     }
 
-    // polyoauth_oidc -> PolyKit SSO consumer bridge (all products)
+    // qoauth_oidc -> QKit SSO consumer bridge (all products)
     if oidc_id != 0xFFFFFFFF as u32 {
         let sso_bridge = InterAppEdge {
             edge_type: EDGE_BRIDGE_TO,
             source_lex: POLYOAUTH_APP_LEX,
-            source_module: "polyoauth_oidc",
-            target_lex: "polylabs/polykit",
-            target_module: "polykit_sso_consumer",
+            source_module: "qoauth_oidc",
+            target_lex: "polyqlabs/qkit",
+            target_module: "qkit_sso_consumer",
             bridge_scope: BridgeScope::Platform as u8,
             shared_fields: ["id_token", "session_handle", "scope_grants"],
             redacted_fields: [],
@@ -490,8 +490,8 @@ circuit polyoauth_register_bridge_edges(
 // Internal Helpers
 // ═══════════════════════════════════════════════════════════════════════════════
 
-circuit find_polyoauth_module_id(graph: CsrStorage, name: string) -> u32
-    lex polylabs/polyoauth
+circuit find_qoauth_module_id(graph: CsrStorage, name: string) -> u32
+    lex polyqlabs/qoauth
     @status production
     @precision D
 {
@@ -500,8 +500,8 @@ circuit find_polyoauth_module_id(graph: CsrStorage, name: string) -> u32
 
 // ── Metrics Store ──────────────────────────────────────────────────────────────
 
-store series polyoauth_app_graph_metrics
-    lex polylabs/polyoauth/metrics
+store series qoauth_app_graph_metrics
+    lex polyqlabs/qoauth/metrics
 {
     operation: string key
     product_name: string
@@ -513,48 +513,48 @@ store series polyoauth_app_graph_metrics
 
 // ── Golden Tests ───────────────────────────────────────────────────────────────
 
-test golden "polyoauth_app_graph_registers_12_modules" {
+test golden "qoauth_app_graph_registers_12_modules" {
     exec {
         let g = graph_create()
-        let g = polyoauth_app_graph_register(g)
+        let g = qoauth_app_graph_register(g)
     }
     assert {
         g.num_nodes == 12
         g.num_edges == 11
-        find_poly_module_id(g, "polyoauth_auth") != 0xFFFFFFFF
-        find_poly_module_id(g, "polyoauth_token") != 0xFFFFFFFF
-        find_poly_module_id(g, "polyoauth_session") != 0xFFFFFFFF
-        find_poly_module_id(g, "polyoauth_oidc") != 0xFFFFFFFF
-        find_poly_module_id(g, "polyoauth_webauthn") != 0xFFFFFFFF
-        find_poly_module_id(g, "polyoauth_risk") != 0xFFFFFFFF
-        find_poly_module_id(g, "polyoauth_admin") != 0xFFFFFFFF
-        find_poly_module_id(g, "polyoauth_metering") != 0xFFFFFFFF
-        find_poly_module_id(g, "polyoauth_platform_health") != 0xFFFFFFFF
-        find_poly_module_id(g, "polyoauth_rbac") != 0xFFFFFFFF
-        find_poly_module_id(g, "polyoauth_identity_graph") != 0xFFFFFFFF
-        find_poly_module_id(g, "polyoauth_token_dag") != 0xFFFFFFFF
+        find_poly_module_id(g, "qoauth_auth") != 0xFFFFFFFF
+        find_poly_module_id(g, "qoauth_token") != 0xFFFFFFFF
+        find_poly_module_id(g, "qoauth_session") != 0xFFFFFFFF
+        find_poly_module_id(g, "qoauth_oidc") != 0xFFFFFFFF
+        find_poly_module_id(g, "qoauth_webauthn") != 0xFFFFFFFF
+        find_poly_module_id(g, "qoauth_risk") != 0xFFFFFFFF
+        find_poly_module_id(g, "qoauth_admin") != 0xFFFFFFFF
+        find_poly_module_id(g, "qoauth_metering") != 0xFFFFFFFF
+        find_poly_module_id(g, "qoauth_platform_health") != 0xFFFFFFFF
+        find_poly_module_id(g, "qoauth_rbac") != 0xFFFFFFFF
+        find_poly_module_id(g, "qoauth_identity_graph") != 0xFFFFFFFF
+        find_poly_module_id(g, "qoauth_token_dag") != 0xFFFFFFFF
     }
 }
 
-test golden "polyoauth_bridge_edges_connect_cross_product" {
+test golden "qoauth_bridge_edges_connect_cross_product" {
     exec {
         let g = graph_create()
-        let g = polyoauth_app_graph_register(g)
-        let g = polyoauth_register_bridge_edges(g)
+        let g = qoauth_app_graph_register(g)
+        let g = qoauth_register_bridge_edges(g)
     }
     assert {
         g.num_nodes == 12 + 3
-        let auth_id = find_poly_module_id(g, "polyoauth_auth")
+        let auth_id = find_poly_module_id(g, "qoauth_auth")
         auth_id != 0xFFFFFFFF
-        let webauthn_id = find_poly_module_id(g, "polyoauth_webauthn")
+        let webauthn_id = find_poly_module_id(g, "qoauth_webauthn")
         webauthn_id != 0xFFFFFFFF
-        let oidc_id = find_poly_module_id(g, "polyoauth_oidc")
+        let oidc_id = find_poly_module_id(g, "qoauth_oidc")
         oidc_id != 0xFFFFFFFF
     }
 }
 
-test golden "make_polyoauth_module_creates_valid_node" {
-    let node = make_polyoauth_module("polyoauth_test",
+test golden "make_qoauth_module_creates_valid_node" {
+    let node = make_qoauth_module("qoauth_test",
         AperturePartition::Backend as u8,
         SLATier::Standard as u8,
         ResourceBudget8D {
@@ -562,7 +562,7 @@ test golden "make_polyoauth_module_creates_valid_node" {
             storage: 1000, observe_events: 100, proofs: 10,
             consensus: 5, memory: 4096,
         })
-    assert node.name == "polyoauth_test"
+    assert node.name == "qoauth_test"
     assert node.version_major == POLYOAUTH_VERSION_MAJOR
     assert node.version_minor == POLYOAUTH_VERSION_MINOR
     assert node.resource_budget.execution == 5000
